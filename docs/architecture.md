@@ -283,13 +283,25 @@ Two layers:
 - All other services are **stateless resource servers**: Spring Security filter validates the JWT
   signature/expiry locally (no network call to Auth per request), extracts `userId` + `roles` into
   the security context.
-- Role-based authorization: `@PreAuthorize` / method security for ADMIN-only endpoints (product
-  writes, inventory management); ownership checks (order belongs to requesting user) enforced in
-  service layer.
+- Role-based authorization: URL-based rules in each service's `SecurityFilterChain`
+  (`.requestMatchers(HttpMethod.X, "...").hasRole("ADMIN")`) for whole-endpoint ADMIN-only rules
+  (e.g. Product Service's writes) — simpler than `@PreAuthorize` method security for this coarse a
+  grain, and used consistently as each service is built. Ownership checks (e.g. "this order belongs
+  to the requesting user") are finer-grained and belong in the service layer instead.
 - Passwords hashed with BCrypt; no plaintext ever logged.
 - Correlation ID + userId (not the token) included in structured logs — never log tokens or
   passwords.
 - CORS configured for the local React dev origin.
+- **Gotcha every new service's `SecurityConfig` must include**: add
+  `.requestMatchers("/error").permitAll()` as the first authorization rule. A `sendError()` from
+  Spring Security (401 via the entry point, 403 via access-denied) makes the embedded servlet
+  container perform a real internal forward to `/error`, which re-enters the *same* security filter
+  chain as a second dispatch. If `/error` isn't explicitly permitted, that forward falls through to
+  `anyRequest().authenticated()`, fails differently, and silently overwrites the original status code
+  the client actually receives (discovered via Product Service's `create_rejectsCustomerRole_withForbidden`
+  test: expected 403, observed 401 — only reproduces with a real embedded server, e.g.
+  `@SpringBootTest(webEnvironment = RANDOM_PORT)`, not `@WebMvcTest`'s simulated dispatch, which
+  doesn't perform a real container-level forward).
 
 ---
 
@@ -390,8 +402,9 @@ resource-server services — kept intentionally small to avoid it becoming a dum
 3. **Product Service** — done: CRUD + pagination + Redis caching (`@Cacheable`/`@CacheEvict` over
    two namespaces, `products` and `productList`), soft delete, public reads/ADMIN writes via the
    same JWT model as Auth Service (public-key-only verification, no signing capability in this
-   service), unit + `@WebMvcTest` + `@DataJpaTest` + Testcontainers (Postgres + Redis) tests.
-   Independent of everything else besides Auth's JWT contract.
+   service), unit + `@WebMvcTest` + `@DataJpaTest` + Testcontainers (Postgres + Redis) tests,
+   verified in CI (49/49 reactor-wide tests passing at the time). Independent of everything else
+   besides Auth's JWT contract.
 4. **Inventory Service**: stock model + optimistic-locking reservation logic + REST admin endpoints,
    fully unit/integration tested in isolation (no Kafka yet — test the concurrency-safe update
    directly).
