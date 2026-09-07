@@ -107,6 +107,18 @@
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Without this, TestRestTemplate falls back to the JDK's HttpURLConnection transport, which
+      throws HttpRetryException ("cannot retry due to server authentication, in streaming mode")
+      when a POST-with-body gets back a 401 - exactly what AuthControllerIntegrationTest exercises
+      for reused/revoked refresh tokens. Adding Apache HttpClient makes RestTemplateBuilder use
+      HttpComponentsClientHttpRequestFactory instead, which doesn't have this limitation.
+    -->
+    <dependency>
+      <groupId>org.apache.httpcomponents.client5</groupId>
+      <artifactId>httpclient5</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
