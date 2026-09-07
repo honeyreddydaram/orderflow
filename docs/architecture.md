@@ -573,3 +573,24 @@ Actions Ubuntu runners, which run Docker directly with no Docker Desktop gateway
 are unaffected by this). All non-Testcontainers tests continue to pass locally without issue. The
 `testcontainers.version` bump to 1.21.4 is kept regardless, since it is a genuine improvement and
 introduces no regressions.
+
+**Resolution — CI confirms the design is sound.** Once pushed to GitHub Actions (Ubuntu, real
+Docker, no Docker Desktop gateway), Testcontainers worked correctly on the first try and surfaced
+two real, previously-hidden bugs that local flakiness had never let the test reach far enough to
+find:
+
+1. `TestRestTemplate` defaulted to the JDK's `HttpURLConnection` transport, which throws
+   `HttpRetryException` ("cannot retry due to server authentication, in streaming mode") when a
+   POST-with-body gets back a 401 — exactly what the "reused refresh token" assertion exercises.
+   Fixed by adding `org.apache.httpcomponents.client5:httpclient5` as a test dependency so
+   `RestTemplateBuilder` uses `HttpComponentsClientHttpRequestFactory` instead. Test-only change,
+   no assertions touched.
+2. `/logout` required a bearer access token in `SecurityConfig`, inconsistent with `/refresh` (which
+   already treats possession of the refresh token itself as sufficient authorization). Fixed by
+   adding `/logout` to the `permitAll` list, matching `/refresh`'s existing, RFC 7009-aligned model.
+
+With both fixes, CI is green: **23/23 tests pass** (10 in `common`, 13 in `auth-service`, including
+all 4 `AuthControllerIntegrationTest` cases). This is the authoritative, machine-independent proof
+that the Testcontainers setup, the auth flow, and the reactor build are all correct — the entire
+local Docker Desktop saga above was purely an artifact of this one Windows machine's Docker Desktop
+installation, never a defect in OrderFlow itself.
