@@ -36,6 +36,10 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .authorizeHttpRequests(auth -> auth
+                        // A sendError() triggers a container-level forward to /error, which re-enters
+                        // this filter chain as a second dispatch; without this, that forward fails
+                        // anyRequest().authenticated() and silently overwrites the real status code.
+                        .requestMatchers("/error").permitAll()
                         .requestMatchers("/api/v1/auth/register", "/api/v1/auth/login",
                                 "/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
