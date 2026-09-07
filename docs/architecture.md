@@ -60,7 +60,7 @@ JSON logs, so a single order's journey can be grepped across all six services.
 | Service | Responsibility |
 |---|---|
 | **Auth** | User registration, password hashing (BCrypt), login, JWT issuance (access + refresh), role management (`CUSTOMER`, `ADMIN`). Source of truth for identity. |
-| **Product** | Product catalog CRUD (admin-only writes), category browsing, search/pagination, price info. Publishes nothing; read-heavy, cached in Redis. |
+| **Product** | Product catalog CRUD (admin-only writes), pagination, price/stock info. Publishes nothing; read-heavy, cached in Redis. (Category browsing was deferred - see Milestone 3 note below.) |
 | **Order** | Order creation & lifecycle state machine (`PENDING → AWAITING_PAYMENT → CONFIRMED → FAILED/CANCELLED`), order history per user, saga **orchestrator** for the order flow (via event choreography, see §6/§9 note on style), owns the "current truth" of an order. |
 | **Inventory** | Stock levels per product/SKU, reservation on `OrderCreated`, release on failure/compensation, decrement on payment success. Owns concurrency control for stock. |
 | **Payment** | Simulated payment processing (approve/decline via configurable rule, e.g. random or amount-based), idempotent charge records, publishes success/failure events. No real payment gateway integration in v1. |
@@ -71,7 +71,7 @@ JSON logs, so a single order's journey can be grepped across all six services.
 ## 3. Database Ownership (database-per-service, all Postgres, separate schemas/DBs)
 
 - **auth_db**: `users`, `roles`, `refresh_tokens`
-- **product_db**: `products`, `categories`
+- **product_db**: `products` (id, name, description, price, stock_quantity, active, created_at, updated_at)
 - **order_db**: `orders`, `order_items`, `order_status_history`, `processed_events` (idempotency table)
 - **inventory_db**: `stock_items` (product_id, available_qty, reserved_qty, version), `reservations`, `processed_events`
 - **payment_db**: `payments`, `payment_attempts`, `processed_events`
@@ -92,12 +92,15 @@ services).
 - `POST /logout` — revoke refresh token
 - `GET /me` — current user profile (JWT required)
 
-**Product Service** (`/api/v1/products`)
-- `GET /products?page=&size=&category=&sort=` — paginated catalog (public, Redis-cached)
-- `GET /products/{id}` — product detail (cached)
+**Product Service** (`/api/v1/products`, port 8082) — implemented in Milestone 3
+- `GET /products?page=&size=&sort=` — paginated catalog (public, Redis-cached, max page size 100)
+- `GET /products/{id}` — product detail (public, cached)
 - `POST /products` — create (ADMIN)
 - `PUT /products/{id}` — update (ADMIN, evicts cache)
 - `DELETE /products/{id}` — soft delete (ADMIN, evicts cache)
+
+No `category` filter/field yet - deferred until a real need for it appears (e.g. when the frontend
+or Order Service requires it); adding it later is a non-breaking additive change.
 
 **Order Service** (`/api/v1/orders`)
 - `POST /orders` — create order from cart items (CUSTOMER, JWT)
@@ -292,9 +295,12 @@ Two layers:
 
 ## 14. Redis Caching Strategy
 
-- **Product catalog cache**: `GET /products/{id}` and paginated list results cached with a
-  reasonable TTL (e.g. 10 min) plus explicit eviction on `PUT/DELETE /products/{id}` (write-through
-  invalidation, not pure TTL) — key pattern `product:{id}`, `product:list:{page}:{size}:{category}`.
+- **Product catalog cache** (implemented, Milestone 3): two Spring Cache namespaces backed by
+  Redis, `products` (single product by id) and `productList` (paginated listings), 10-minute TTL,
+  JSON-serialized via `GenericJackson2JsonRedisSerializer`. Any create/update/delete evicts the
+  affected product's entry (`products::{id}`) and the *entire* `productList` namespace (a single
+  write can change page membership/counts across many pages, so partial list invalidation isn't
+  safe) — and evicts nothing outside those two namespaces. Write-through invalidation, not pure TTL.
 - **Idempotency-key store** for `POST /orders` (§10).
 - **Optional**: JWT blacklist for logout/revocation (store revoked refresh-token IDs with TTL =
   remaining token life) — simple and avoids a DB round trip on every request.
@@ -376,12 +382,16 @@ resource-server services — kept intentionally small to avoid it becoming a dum
 
 ## 18. Implementation Milestones (Order of Work)
 
-1. **Scaffolding**: repo structure, root `docker-compose.yml` with Postgres/Kafka(KRaft)/Redis only,
-   `common` module, GitHub Actions skeleton that just builds.
-2. **Auth Service**: registration/login/JWT issuance + refresh, unit + Testcontainers tests. (Nothing
-   else depends on runtime Auth calls since verification is stateless, but it unlocks realistic
-   frontend/API testing.)
-3. **Product Service**: CRUD + pagination + Redis caching. Independent of everything else.
+1. **Scaffolding** — done: repo structure, root `docker-compose.yml` with Postgres/Kafka(KRaft)/Redis,
+   `common` module, GitHub Actions CI.
+2. **Auth Service** — done: registration/login/JWT issuance + refresh, unit + Testcontainers tests,
+   verified in CI (23/23 tests passing at the time). (Nothing else depends on runtime Auth calls
+   since verification is stateless, but it unlocks realistic frontend/API testing.)
+3. **Product Service** — done: CRUD + pagination + Redis caching (`@Cacheable`/`@CacheEvict` over
+   two namespaces, `products` and `productList`), soft delete, public reads/ADMIN writes via the
+   same JWT model as Auth Service (public-key-only verification, no signing capability in this
+   service), unit + `@WebMvcTest` + `@DataJpaTest` + Testcontainers (Postgres + Redis) tests.
+   Independent of everything else besides Auth's JWT contract.
 4. **Inventory Service**: stock model + optimistic-locking reservation logic + REST admin endpoints,
    fully unit/integration tested in isolation (no Kafka yet — test the concurrency-safe update
    directly).

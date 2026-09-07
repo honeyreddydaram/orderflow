@@ -9,10 +9,12 @@ concurrency/idempotency/retry strategy, and implementation milestones.
 
 ## Status
 
-Milestone 1 (scaffolding) complete. Milestone 2 (Auth Service) implemented: registration/login,
-RS256 JWT issuance with rotating refresh tokens, BCrypt, Flyway-managed schema, unit tests, and a
-Testcontainers-based integration test. Application services are added incrementally per the
-milestones in the architecture doc.
+Milestone 1 (scaffolding) complete. Milestone 2 (Auth Service) complete: registration/login, RS256
+JWT issuance with rotating refresh tokens, BCrypt, Flyway-managed schema, unit tests, and a
+Testcontainers-based integration test — verified in CI. Milestone 3 (Product Service) complete:
+product CRUD, pagination, Redis-cached reads with scoped cache invalidation on writes — see
+[Product Service](#product-service) below for API examples. Application services are added
+incrementally per the milestones in the architecture doc.
 
 **Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
@@ -40,4 +42,42 @@ Kafka UI at http://localhost:8090.
 
 ```
 mvn -B verify
+```
+
+## Product Service
+
+Runs on port 8082. Reads (`GET`) are public; writes require a bearer access token issued by Auth
+Service with the `ADMIN` role. Product Service only ever *verifies* tokens (loads Auth's RSA
+public key) — it never holds a private key or issues tokens itself.
+
+List products (paginated, cached):
+```
+curl "http://localhost:8082/api/v1/products?page=0&size=20&sort=price,asc"
+```
+
+Get one product:
+```
+curl "http://localhost:8082/api/v1/products/{id}"
+```
+
+Create a product (ADMIN token required):
+```
+curl -X POST http://localhost:8082/api/v1/products \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Widget", "description": "A widget", "price": 9.99, "stockQuantity": 100}'
+```
+
+Update a product (evicts its cache entry and the product-list cache):
+```
+curl -X PUT http://localhost:8082/api/v1/products/{id} \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Widget Pro", "description": "Better widget", "price": 14.99, "stockQuantity": 50}'
+```
+
+Delete a product (soft delete — sets `active=false`, evicts the same cache entries):
+```
+curl -X DELETE http://localhost:8082/api/v1/products/{id} \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
 ```

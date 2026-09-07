@@ -1,0 +1,8 @@
+orderflow:
+  jwt:
+    public-key-location: classpath:keys/public_key.pem
+
+logging:
+  level:
+    root: WARN
+    com.orderflow: DEBUG

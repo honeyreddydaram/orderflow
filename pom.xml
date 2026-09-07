@@ -41,11 +41,12 @@
 
   <!--
     Modules are added incrementally as each service is scaffolded (see docs/architecture.md,
-    Implementation Milestones). Only `common` exists so far.
+    Implementation Milestones).
   -->
   <modules>
     <module>common</module>
     <module>auth-service</module>
+    <module>product-service</module>
   </modules>
 
   <build>
@@ -56,6 +57,8 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <configuration>
             <release>${maven.compiler.release}</release>
+            <!-- Required for @PathVariable/@RequestParam to resolve by parameter name via reflection. -->
+            <parameters>true</parameters>
           </configuration>
         </plugin>
         <plugin>

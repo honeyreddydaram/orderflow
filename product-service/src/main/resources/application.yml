@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: product-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/product_db
+    username: orderflow
+    password: orderflow
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8082
+
+orderflow:
+  jwt:
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:docker/secrets/jwt/public_key.pem}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    com.orderflow: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://postgres:5432/product_db
+  data:
+    redis:
+      host: redis
+      port: 6379
+
+orderflow:
+  jwt:
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:/run/secrets/jwt/public_key.pem}

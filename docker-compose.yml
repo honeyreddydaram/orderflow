@@ -87,5 +87,22 @@ services:
       postgres:
         condition: service_healthy
 
+  product-service:
+    build:
+      context: .
+      dockerfile: product-service/Dockerfile
+    container_name: orderflow-product-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    volumes:
+      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   orderflow-postgres-data:
