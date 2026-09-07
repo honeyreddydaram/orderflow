@@ -1,0 +1,42 @@
+# Maven / Java
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# IDE
+.idea/
+*.iml
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Env / secrets
+.env
+*.pem
+*.key
+# Exception: committed test-fixture keypair (not a real secret - used only to sign JWTs in
+# isolated test DBs). See auth-service/src/test/java/.../AuthControllerIntegrationTest.java.
+!auth-service/src/test/resources/keys/*.pem
+
+# Node / frontend (later)
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# Testcontainers / Docker
+docker/volumes/
+
+# Generated JWT signing keys (see docker/generate-jwt-keys.sh) - never commit private keys
+docker/secrets/

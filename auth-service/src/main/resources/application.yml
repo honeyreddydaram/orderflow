@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/auth_db
+    username: orderflow
+    password: orderflow
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+server:
+  port: 8081
+
+orderflow:
+  jwt:
+    private-key-location: file:${JWT_PRIVATE_KEY_PATH:docker/secrets/jwt/private_key.pem}
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:docker/secrets/jwt/public_key.pem}
+    access-token-ttl-seconds: 900
+    refresh-token-ttl-seconds: 1209600
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    com.orderflow: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://postgres:5432/auth_db
+
+orderflow:
+  jwt:
+    private-key-location: file:${JWT_PRIVATE_KEY_PATH:/run/secrets/jwt/private_key.pem}
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:/run/secrets/jwt/public_key.pem}

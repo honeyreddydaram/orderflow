@@ -1,0 +1,11 @@
+orderflow:
+  jwt:
+    private-key-location: classpath:keys/private_key.pem
+    public-key-location: classpath:keys/public_key.pem
+    access-token-ttl-seconds: 900
+    refresh-token-ttl-seconds: 1209600
+
+logging:
+  level:
+    root: WARN
+    com.orderflow: DEBUG
