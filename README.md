@@ -28,13 +28,20 @@ and consumes `payment.completed`/`payment.failed` to permanently decrement or re
 (Notification Service) complete: consumes `order.confirmed`/`order.failed` and simulates sending a
 notification — the last saga participant, and the first service with no transactional outbox, since
 it publishes nothing downstream — see [Notification Service](#notification-service) below.
-Application services are added incrementally per the milestones in the architecture doc.
+Milestone 8 (End-to-end system validation) complete: `scripts/e2e-smoke-test.sh` drives the real
+`docker compose` stack (no mocks) through the full saga end to end, found and fixed four real bugs
+invisible to any per-service test (see `docs/architecture.md` section 22), and now runs as its own
+CI job alongside the existing Testcontainers suite. Application services are added incrementally
+per the milestones in the architecture doc.
 
-**Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
+**Known issues:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
 [`docs/architecture.md` section 21](docs/architecture.md#21-known-local-environment-limitation-testcontainers-on-windows--docker-desktop)
-for the root-cause investigation. They are verified via CI instead. All other tests run locally
-without issue.
+for the root-cause investigation. They are verified via CI instead. The same machine also can't
+reliably run the full nine-container `docker compose` stack at once (7.7GB total RAM) — see
+[section 22](docs/architecture.md#22-milestone-8-end-to-end-system-validation) — so
+`scripts/e2e-smoke-test.sh` is likewise verified via CI. All other tests, and the script itself on
+a machine with adequate free memory, run locally without issue.
 
 ## Prerequisites
 
@@ -57,6 +64,19 @@ Kafka UI at http://localhost:8090.
 ```
 mvn -B verify
 ```
+
+## End-to-end validation
+
+```
+./docker/generate-jwt-keys.sh   # once, before first use
+bash scripts/e2e-smoke-test.sh
+```
+
+Builds every service's image, brings up the full stack, and drives the real saga end to end
+through plain HTTP + Postgres assertions — no mocks, no Testcontainers. See
+[`docs/architecture.md` section 22](docs/architecture.md#22-milestone-8-end-to-end-system-validation)
+for what this validates and the bugs it caught. Leaves the stack running for inspection if
+anything fails (`docker compose logs <service>`); tears itself down on success.
 
 ## Product Service
 

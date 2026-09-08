@@ -577,11 +577,24 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    built correctly on the first attempt, CI green with zero fix-up commits, applying the Milestone
    5/6 lessons (section 12) from the start rather than rediscovering them. Verified in CI (167/167
    reactor-wide tests passing at the time, 13 in notification-service alone).
-8. **Cross-cutting polish**: any remaining gaps in correlation IDs, structured JSON logging, global
-   exception handlers, Actuator - across whichever services need it once 5-7 are built.
-9. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
-   overselling; kill-a-consumer-mid-processing test to prove idempotent redelivery end-to-end
-   across real services (Order Service's own redelivery safety is already proven per-service).
+8. **End-to-End System Validation** — done: `scripts/e2e-smoke-test.sh` drives the real
+   `docker compose` stack (no mocks, no Testcontainers) through the happy path, both failure paths,
+   and a system-level `Idempotency-Key` replay, asserting on real Postgres state across all six
+   services. Found and fixed four real, previously-invisible bugs no per-service test could
+   structurally have caught (see section 22): a Docker multi-module build failure, a
+   `jjwt-impl`/`jjwt-jackson` runtime-scope gap that crashed every downstream service's JWT
+   verification in production while every test suite stayed green, a JWT-key file-permission bug
+   that only reproduced on a real Linux Docker host, and a local (Windows, 7.7GB RAM) resource
+   ceiling mitigated with per-service JVM heap caps. Also closed a security gap (the JWT private
+   signing key was mounted into every service, not just Auth Service) and an availability gap (no
+   timeout on Order Service's synchronous call to Product Service), and added the previously-missing
+   "message permanently fails and lands on its `.DLT` topic" test to all four Kafka consumers.
+   New `e2e-smoke-test` CI job verified green: 15/15 assertions passing.
+9. **Cross-cutting polish** (next): any remaining gaps in correlation IDs, structured JSON logging,
+   global exception handlers, Actuator - across whichever services still need it.
+10. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
+    overselling; kill-a-consumer-mid-processing test to prove idempotent redelivery end-to-end
+    across real services (Order Service's own redelivery safety is already proven per-service).
 13. **CI maturity**: full GitHub Actions matrix (build, unit, Testcontainers integration) on PR;
     Docker image build job.
 14. **Frontend (React + TS)**: login/register, product browsing, cart, order placement, order status
@@ -831,6 +844,19 @@ caught, plus a genuine local resource constraint:
    limitation as §21, and handled the same way: verify authoritatively via CI (GitHub-hosted runners
    provide a clean 7GB with no competing IDE/browser/Docker-Desktop-VM overhead), rather than
    continuing to fight it locally.
+4. **Auth Service failed to start in CI** with `FileNotFoundException: /run/secrets/jwt/private_key.pem
+   (Permission denied)`. `openssl genpkey` defaults to mode 600 (owner-only); the container reads
+   the bind-mounted key as its own non-root `orderflow` user, a different UID than whatever
+   generated it on the host, so a real Linux Docker host enforces the permission bits and denies
+   the read. Invisible on this Windows machine, since Docker Desktop's volume mounting doesn't
+   enforce Unix file permissions the same way - it only ever failed in CI. Fixed by having
+   `generate-jwt-keys.sh` `chmod 644` the generated keys: they're throwaway dev/CI keys, never
+   committed and regenerated per environment, so world-readable is a safe, minimal fix.
 
 A new CI job, `e2e-smoke-test`, runs after the existing `build-and-test` job and executes this
-script against a real `docker compose up` on the runner.
+script against a real `docker compose up` on the runner. **Result: green, first time all four
+fixes above were in place** - 15/15 assertions pass (happy path fully confirms with the correct
+payment/inventory/notification side effects; both failure paths leave the correct partial state
+behind; the system-level Idempotency-Key replay returns the same order exactly once) - the
+authoritative, machine-independent proof that the six services, wired together for real, behave
+exactly as every per-service test already claimed in isolation.
