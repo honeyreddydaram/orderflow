@@ -158,5 +158,22 @@ services:
       kafka:
         condition: service_healthy
 
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    container_name: orderflow-notification-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    volumes:
+      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   orderflow-postgres-data:
