@@ -353,6 +353,23 @@ Inventory/Payment Service unless watched for:**
   `LazyInitializationException`. Use a `JOIN FETCH` query (see `OrderRepository.findByIdWithItems`)
   to eagerly load what the caller needs in that one query, rather than relying on an open session.
 
+**Two more gotchas hit writing Inventory Service's Testcontainers tests (both invisible on this
+machine until CI actually ran them - see §21):**
+- A repository's `@Modifying @Query` method throws `InvalidDataAccessApiUsageException` /
+  `TransactionRequiredException` if invoked with no active transaction. This is silently fine in
+  production (every caller is already inside a `@Transactional` service method) and in
+  `@DataJpaTest` tests (which wrap each test in its own transaction by default) - but a test that
+  deliberately suspends that ambient transaction to exercise real concurrency
+  (`@Transactional(propagation = NOT_SUPPORTED)`, see `StockItemRepositoryTest.concurrentReservations_neverOversell`),
+  or a `@SpringBootTest` class with no per-test transaction at all, must wrap any direct call to a
+  `@Modifying` method in its own `TransactionTemplate.execute(...)`.
+- Mockito's `doCallRealMethod()` cannot be used on a Spring Data JPA repository method - the
+  interface method is formally `abstract` (it has no default body), and Mockito refuses to "call
+  the real method" on an abstract method regardless of the fact that the runtime instance is a
+  working dynamic proxy. Don't `@SpyBean` a repository interface to inject a fault; spy a concrete
+  service-layer class instead (`InventoryEventListenerIntegrationTest` moved its fault injection
+  from `ReservationRepository.save` to the concrete `OutboxWriter.write`).
+
 ---
 
 ## 13. Security Architecture
@@ -508,7 +525,8 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    service's admin endpoints have no customer-facing retry/idempotency-key use case. Unit,
    `@WebMvcTest`, `@DataJpaTest` + Testcontainers (incl. the overselling-prevention concurrency
    test), and Testcontainers (Postgres+Kafka) integration tests including a dedicated
-   crash-before-commit/Kafka-redelivery test.
+   crash-before-commit/Kafka-redelivery test. Verified in CI (134/134 reactor-wide tests passing at
+   the time, 47 in inventory-service alone).
 6. **Payment Service** (next): consumes `inventory.reserved`, simulated charge, publishes
    `payment.completed`/`payment.failed`.
 7. **Notification Service**: consumes terminal events (`order.confirmed`/`order.failed`),
