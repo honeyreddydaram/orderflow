@@ -69,7 +69,10 @@ public class OrderService {
 
         var reservation = idempotencyKeyService.reserve(idempotencyKey);
         if (reservation instanceof IdempotencyKeyService.AlreadyResolved resolved) {
-            Order existing = orderRepository.findById(resolved.orderId())
+            // findByIdWithItems, not findById: this runs outside any transaction, and items is
+            // lazy-loaded - a plain findById's entity would throw LazyInitializationException
+            // the moment OrderResponse.from() tries to read it back.
+            Order existing = orderRepository.findByIdWithItems(resolved.orderId())
                     .orElseThrow(() -> new ResourceNotFoundException("Order " + resolved.orderId() + " not found"));
             return new CreateResult(OrderResponse.from(existing), true);
         }

@@ -117,7 +117,7 @@ class OrderServiceTest {
     void create_withIdempotencyKey_alreadyResolved_returnsExistingOrderWithoutCreating() {
         Order existing = pendingOrder(userId);
         when(idempotencyKeyService.reserve("key-1")).thenReturn(new IdempotencyKeyService.AlreadyResolved(existing.getId()));
-        when(orderRepository.findById(existing.getId())).thenReturn(Optional.of(existing));
+        when(orderRepository.findByIdWithItems(existing.getId())).thenReturn(Optional.of(existing));
 
         CreateOrderRequest request = new CreateOrderRequest(List.of(new OrderItemRequest(productId, 2)));
         OrderService.CreateResult result = orderService.create(userId, request, "key-1", correlationId);
