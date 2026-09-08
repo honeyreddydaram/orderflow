@@ -28,6 +28,8 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -77,6 +79,8 @@ class InventoryEventListenerIntegrationTest {
     private ProcessedEventRepository processedEventRepository;
     @SpyBean
     private OutboxWriter outboxWriter;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private KafkaTemplate<String, String> testProducer;
     private final ObjectMapper objectMapper = JsonMapper.builder().addModule(new JavaTimeModule()).build();
@@ -299,6 +303,10 @@ class InventoryEventListenerIntegrationTest {
         // successful retry's transaction committed it) - if the transaction-boundary fix were
         // wrong and the marker had been committed separately from the business work, the first
         // (failing) attempt would have left it stuck at "processed" and this would return 1.
-        assertThat(processedEventRepository.insertIfAbsent(UUID.randomUUID(), eventId)).isEqualTo(0);
+        // The @Modifying insertIfAbsent query requires an active transaction (this test class has
+        // no ambient per-test transaction, unlike @DataJpaTest), so it's run explicitly here.
+        Integer insertedAgain = new TransactionTemplate(transactionManager)
+                .execute(status -> processedEventRepository.insertIfAbsent(UUID.randomUUID(), eventId));
+        assertThat(insertedAgain).isEqualTo(0);
     }
 }
