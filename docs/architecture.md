@@ -297,6 +297,19 @@ Two layers, both implemented in Order Service (Milestone 4):
 - Order status is the single source of truth for "what happened"; consumers never assume success
   until they observe the confirming event.
 
+**Two Hibernate/Postgres gotchas hit while implementing this (Order Service) that will recur in
+Inventory/Payment Service unless watched for:**
+- `@Lob` on a `String` field maps to Postgres's `oid` large-object type by default, not `text` -
+  if the Flyway migration defines a plain `TEXT` column (as `outbox_events.payload` does), schema
+  validation fails at startup. A `TEXT` column has no practical size limit, so `@Lob` is unnecessary
+  for JSON payload columns like this - just omit it.
+- A method that intentionally has **no** `@Transactional` (e.g. because it makes an HTTP call
+  before touching the database, like order creation validating against Product Service) must not
+  return an entity with lazy-loaded collections and then read them later - the entity is detached
+  the moment the repository call returns, and touching a lazy collection throws
+  `LazyInitializationException`. Use a `JOIN FETCH` query (see `OrderRepository.findByIdWithItems`)
+  to eagerly load what the caller needs in that one query, rather than relying on an open session.
+
 ---
 
 ## 13. Security Architecture
@@ -441,7 +454,8 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    Idempotency-Key safety proven under real concurrent load (`OrderIdempotencyConcurrencyTest`);
    duplicate Kafka delivery proven to transition exactly once (`OrderControllerIntegrationTest`).
    Consequence of the reorder: no synchronous stock check at order-creation time yet - that arrives
-   when Inventory Service is built and starts consuming `order.created`.
+   when Inventory Service is built and starts consuming `order.created`. Verified in CI (87/87
+   reactor-wide tests passing at the time, 38 in order-service alone).
 5. **Inventory Service** (next): stock model + optimistic-locking reservation logic, consumes
    `order.created`, publishes `inventory.reserved`/`inventory.reservation-failed` against the
    schemas Order Service already committed to; consumes `payment.failed` to release a reservation
