@@ -77,7 +77,10 @@ JSON logs, so a single order's journey can be grepped across all six services.
 - **inventory_db**: `stock_items` (product_id as PK, available_qty, reserved_qty, version - plus
   a DB-level `CHECK` constraint that both quantities stay >= 0, belt-and-suspenders beneath the
   application-level guards), `reservations`, `reservation_items`, `outbox_events`, `processed_events`
-- **payment_db**: `payments`, `payment_attempts`, `processed_events`
+- **payment_db**: `payments` (order_id UNIQUE, user_id, amount, status, transaction_ref, decline_reason),
+  `outbox_events`, `processed_events` - no `payment_attempts` (dropped from the original sketch: v1
+  has no retry-of-a-declined-charge flow, a decline is terminal, so there's nothing an attempts-audit
+  table would record beyond what `payments` itself already holds)
 - **notification_db**: `notifications`, `processed_events`
 
 No service reaches into another's schema. Product data needed by Order (name/price snapshot) is
@@ -183,7 +186,15 @@ Common envelope (all events share this shape, JSON via Spring Kafka `JsonSeriali
 ```
 
 - **OrderCreated**: `orderId, userId, items[{productId, quantity, unitPrice}], totalAmount`
-- **InventoryReserved**: `orderId, reservationId, items[{productId, quantity}]`
+- **InventoryReserved**: `orderId, reservationId, userId, totalAmount, items[{productId, quantity}]` -
+  `userId`/`totalAmount` were added in Milestone 6, once Payment Service (a consumer of this event)
+  needed an amount to charge and a userId to enforce ownership on `GET /payments/{orderId}`, neither
+  of which the event originally carried. Inventory Service already had both on hand from the
+  `OrderCreated` event it consumed to produce this one, so populating them cost nothing there; Order
+  Service's own copy of the schema (it also consumes this event, to advance order status) was updated
+  to match even though it ignores both fields, since Jackson's default `FAIL_ON_UNKNOWN_PROPERTIES`
+  would otherwise route the message straight to Order Service's DLT the moment the two schemas
+  drifted.
 - **InventoryReservationFailed**: `orderId, reason, items[{productId, requestedQty, availableQty}]`
 - **PaymentCompleted**: `orderId, paymentId, amount, transactionRef`
 - **PaymentFailed**: `orderId, reason`
@@ -527,9 +538,21 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    test), and Testcontainers (Postgres+Kafka) integration tests including a dedicated
    crash-before-commit/Kafka-redelivery test. Verified in CI (134/134 reactor-wide tests passing at
    the time, 47 in inventory-service alone).
-6. **Payment Service** (next): consumes `inventory.reserved`, simulated charge, publishes
-   `payment.completed`/`payment.failed`.
-7. **Notification Service**: consumes terminal events (`order.confirmed`/`order.failed`),
+6. **Payment Service** — done: consumes `inventory.reserved`, decides approve/decline with a
+   deterministic amount-threshold rule (`orderflow.payment.decline-threshold`, not random - keeps
+   both outcomes reproducible in tests), publishes `payment.completed`/`payment.failed` against the
+   schemas Order and Inventory Service already consume. Single-phase transaction (marker + Payment
+   row + outbox write together) since the decision is made before any write and always yields one
+   outcome - simpler than Inventory Service's two-phase reservation writer. No Redis, no
+   concurrency/version-invariant machinery (a payment is decided once and never mutated after).
+   Required extending `InventoryReserved` with `userId`/`totalAmount` (see section 6) - a design gap
+   caught before Payment Service needed to consume the event, fixed as its own isolated, separately
+   CI-verified commit. Unit, `@WebMvcTest`, `@DataJpaTest` + Testcontainers, and Testcontainers
+   (Postgres+Kafka) integration tests including a crash-before-commit/Kafka-redelivery test, built
+   correctly on the first attempt using the two Testcontainers-test gotchas paid for in Milestone 5
+   (see section 12). Verified in CI (154/154 reactor-wide tests passing at the time, 20 in
+   payment-service alone).
+7. **Notification Service** (next): consumes terminal events (`order.confirmed`/`order.failed`),
    simulated send.
 8. **Cross-cutting polish**: any remaining gaps in correlation IDs, structured JSON logging, global
    exception handlers, Actuator - across whichever services need it once 5-7 are built.

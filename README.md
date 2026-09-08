@@ -22,8 +22,10 @@ against the event schemas Inventory/Payment Service will implement next — see
 manual optimistic-locking (conditional bulk `UPDATE`, not JPA `@Version`), consumes `order.created`
 for all-or-nothing multi-item reservation, publishes `inventory.reserved`/`inventory.reservation-failed`,
 and consumes `payment.completed`/`payment.failed` to permanently decrement or release reserved stock
-— see [Inventory Service](#inventory-service) below. Application services are added incrementally
-per the milestones in the architecture doc.
+— see [Inventory Service](#inventory-service) below. Milestone 6 (Payment Service) complete: consumes
+`inventory.reserved`, decides approve/decline with a deterministic amount-threshold rule, publishes
+`payment.completed`/`payment.failed` — see [Payment Service](#payment-service) below. Application
+services are added incrementally per the milestones in the architecture doc.
 
 **Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
@@ -170,4 +172,26 @@ reservation outcome are always committed in the same transaction). Success publi
 `inventory.reserved`; if any item is short, every provisional reservation in the batch is rolled
 back and `inventory.reservation-failed` is published instead. `payment.completed` converts a
 reservation's `reserved_qty` into a permanent decrement; `payment.failed` releases it back to
-`available_qty` — both are also built against event schemas Payment Service will implement next.
+`available_qty`.
+
+## Payment Service
+
+Runs on port 8085. Almost entirely event-driven — its only REST endpoint is a read. Every endpoint
+requires authentication; like Order Service (and unlike Inventory Service's blanket ADMIN-only
+model), ownership is enforced in the service layer rather than at the URL level, since a payment
+always belongs to whoever placed the order. Payment Service only ever *verifies* tokens, the same
+public-key-only model as the other services. It has no Redis dependency and no stock-style
+concurrency machinery: the only write path is the Kafka consumer, and a payment decision is made
+once and never mutated afterward.
+
+Get the payment record for an order (owner or ADMIN):
+```
+curl http://localhost:8085/api/v1/payments/{orderId} -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+On `inventory.reserved`, Payment Service decides approve/decline with a deterministic rule —
+`totalAmount` over `orderflow.payment.decline-threshold` (default `10000.00`) declines with a
+descriptive reason, otherwise it approves with a generated transaction reference — rather than
+randomly, so both the approve and decline paths are reproducible in tests. Approval publishes
+`payment.completed`; decline publishes `payment.failed`, both already consumed by Order Service
+(order confirmation/failure) and Inventory Service (permanent decrement/release).
