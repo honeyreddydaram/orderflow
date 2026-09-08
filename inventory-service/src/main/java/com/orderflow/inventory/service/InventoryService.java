@@ -90,7 +90,8 @@ public class InventoryService {
      */
     public void handleOrderCreated(EventEnvelope<OrderCreatedPayload> envelope) {
         StockReservationWriter.Outcome outcome = stockReservationWriter.attemptReservation(
-                envelope.eventId(), envelope.payload().orderId(), envelope.payload().items(), envelope.correlationId());
+                envelope.eventId(), envelope.payload().orderId(), envelope.payload().userId(),
+                envelope.payload().totalAmount(), envelope.payload().items(), envelope.correlationId());
 
         if (outcome instanceof StockReservationWriter.Failed failed) {
             failureWriter.recordFailure(envelope.eventId(), envelope.payload().orderId(),

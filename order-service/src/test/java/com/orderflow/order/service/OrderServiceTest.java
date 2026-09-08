@@ -195,7 +195,7 @@ class OrderServiceTest {
 
     private EventEnvelope<InventoryReservedPayload> inventoryReservedEnvelope(UUID orderId) {
         return new EventEnvelope<>(UUID.randomUUID(), "InventoryReserved", correlationId, Instant.now(),
-                new InventoryReservedPayload(orderId, UUID.randomUUID(), List.of()));
+                new InventoryReservedPayload(orderId, UUID.randomUUID(), userId, new BigDecimal("29.97"), List.of()));
     }
 
     @Test

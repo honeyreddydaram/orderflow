@@ -50,6 +50,7 @@ class StockReservationWriterTest {
     private StockReservationWriter writer;
 
     private final UUID orderId = UUID.randomUUID();
+    private final UUID userId = UUID.randomUUID();
     private final UUID correlationId = UUID.randomUUID();
     private final UUID eventId = UUID.randomUUID();
 
@@ -57,7 +58,7 @@ class StockReservationWriterTest {
     void attemptReservation_returnsAlreadyProcessed_forDuplicateEvent() {
         when(processedEventRepository.insertIfAbsent(any(), any())).thenReturn(0);
 
-        var outcome = writer.attemptReservation(eventId, orderId, List.of(), correlationId);
+        var outcome = writer.attemptReservation(eventId, orderId, userId, BigDecimal.ZERO, List.of(), correlationId);
 
         assertThat(outcome).isInstanceOf(StockReservationWriter.AlreadyProcessed.class);
         verify(stockMutator, never()).reserve(any(), anyInt());
@@ -75,7 +76,7 @@ class StockReservationWriterTest {
                 new OrderCreatedPayload.Item(productA, 2, new BigDecimal("9.99")),
                 new OrderCreatedPayload.Item(productB, 1, new BigDecimal("4.99")));
 
-        var outcome = writer.attemptReservation(eventId, orderId, items, correlationId);
+        var outcome = writer.attemptReservation(eventId, orderId, userId, new BigDecimal("24.97"), items, correlationId);
 
         assertThat(outcome).isInstanceOf(StockReservationWriter.Reserved.class);
         verify(reservationRepository, times(1)).save(any());
@@ -95,7 +96,7 @@ class StockReservationWriterTest {
                 new OrderCreatedPayload.Item(productA, 2, new BigDecimal("9.99")),
                 new OrderCreatedPayload.Item(productB, 100, new BigDecimal("4.99")));
 
-        var outcome = writer.attemptReservation(eventId, orderId, items, correlationId);
+        var outcome = writer.attemptReservation(eventId, orderId, userId, new BigDecimal("499.99"), items, correlationId);
 
         assertThat(outcome).isInstanceOf(StockReservationWriter.Failed.class);
         var failed = (StockReservationWriter.Failed) outcome;

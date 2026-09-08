@@ -11,6 +11,7 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -65,7 +66,8 @@ public class StockReservationWriter {
     }
 
     @Transactional
-    public Outcome attemptReservation(UUID eventId, UUID orderId, List<OrderCreatedPayload.Item> items, UUID correlationId) {
+    public Outcome attemptReservation(UUID eventId, UUID orderId, UUID userId, BigDecimal totalAmount,
+                                       List<OrderCreatedPayload.Item> items, UUID correlationId) {
         int inserted = processedEventRepository.insertIfAbsent(UUID.randomUUID(), eventId);
         if (inserted == 0) {
             return new AlreadyProcessed();
@@ -104,7 +106,8 @@ public class StockReservationWriter {
                 .map(i -> new InventoryReservedPayload.Item(i.productId(), i.quantity()))
                 .toList();
         outboxWriter.write(orderId, "InventoryReserved", "inventory.reserved",
-                new InventoryReservedPayload(orderId, reservation.getId(), payloadItems), correlationId);
+                new InventoryReservedPayload(orderId, reservation.getId(), userId, totalAmount, payloadItems),
+                correlationId);
 
         return new Reserved(reservation.getId());
     }

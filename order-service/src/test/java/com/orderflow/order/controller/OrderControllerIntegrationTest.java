@@ -177,7 +177,8 @@ class OrderControllerIntegrationTest {
                         && e.getPublishedAt() != null), Duration.ofSeconds(10));
 
         publish("inventory.reserved", created.id(), "InventoryReserved",
-                new InventoryReservedPayload(created.id(), UUID.randomUUID(), List.of()), UUID.randomUUID());
+                new InventoryReservedPayload(created.id(), UUID.randomUUID(), userId, created.totalAmount(), List.of()),
+                UUID.randomUUID());
         awaitTrue(() -> getOrder(userId, created.id()).status() == OrderStatus.AWAITING_PAYMENT, Duration.ofSeconds(10));
 
         publish("payment.completed", created.id(), "PaymentCompleted",
@@ -211,7 +212,8 @@ class OrderControllerIntegrationTest {
 
         OrderResponse created = createOrder(userId, productId, 1);
         publish("inventory.reserved", created.id(), "InventoryReserved",
-                new InventoryReservedPayload(created.id(), UUID.randomUUID(), List.of()), UUID.randomUUID());
+                new InventoryReservedPayload(created.id(), UUID.randomUUID(), userId, created.totalAmount(), List.of()),
+                UUID.randomUUID());
         awaitTrue(() -> getOrder(userId, created.id()).status() == OrderStatus.AWAITING_PAYMENT, Duration.ofSeconds(10));
 
         UUID paymentEventId = UUID.randomUUID();

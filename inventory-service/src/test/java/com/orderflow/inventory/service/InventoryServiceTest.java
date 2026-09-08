@@ -122,7 +122,8 @@ class InventoryServiceTest {
         var envelope = new EventEnvelope<>(eventId, "OrderCreated", correlationId, Instant.now(),
                 new com.orderflow.inventory.messaging.event.OrderCreatedPayload(orderId, UUID.randomUUID(), java.util.List.of(), BigDecimal.ZERO));
         var failed = new StockReservationWriter.Failed("Insufficient stock", java.util.List.of());
-        when(stockReservationWriter.attemptReservation(eventId, orderId, envelope.payload().items(), correlationId))
+        when(stockReservationWriter.attemptReservation(eventId, orderId, envelope.payload().userId(),
+                envelope.payload().totalAmount(), envelope.payload().items(), correlationId))
                 .thenReturn(failed);
 
         inventoryService.handleOrderCreated(envelope);
@@ -136,7 +137,7 @@ class InventoryServiceTest {
         UUID orderId = UUID.randomUUID();
         var envelope = new EventEnvelope<>(eventId, "OrderCreated", UUID.randomUUID(), Instant.now(),
                 new com.orderflow.inventory.messaging.event.OrderCreatedPayload(orderId, UUID.randomUUID(), java.util.List.of(), BigDecimal.ZERO));
-        when(stockReservationWriter.attemptReservation(any(), any(), any(), any()))
+        when(stockReservationWriter.attemptReservation(any(), any(), any(), any(), any(), any()))
                 .thenReturn(new StockReservationWriter.Reserved(UUID.randomUUID()));
 
         inventoryService.handleOrderCreated(envelope);
