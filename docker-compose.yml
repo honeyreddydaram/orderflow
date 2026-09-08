@@ -55,6 +55,9 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_NUM_PARTITIONS: 3
       CLUSTER_ID: orderflow-kraft-cluster-1
+      # Kafka's own JVM defaults its heap off host-visible memory too, same reasoning as the
+      # per-service JAVA_TOOL_OPTIONS caps below.
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 10s
@@ -79,6 +82,11 @@ services:
     container_name: orderflow-auth-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     # Only Auth Service ever signs tokens, so only it gets the private key - see
     # docker/generate-jwt-keys.sh and docs/architecture.md section 13.
     volumes:
@@ -102,6 +110,11 @@ services:
     container_name: orderflow-product-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     volumes:
       - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
@@ -125,6 +138,11 @@ services:
     container_name: orderflow-order-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
       PRODUCT_SERVICE_BASE_URL: http://product-service:8082
     volumes:
       - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
@@ -155,6 +173,11 @@ services:
     container_name: orderflow-inventory-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     volumes:
       - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
@@ -178,6 +201,11 @@ services:
     container_name: orderflow-payment-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     volumes:
       - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
@@ -201,6 +229,11 @@ services:
     container_name: orderflow-notification-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Without an explicit cap, the JVM sizes its default heap off the HOST's visible memory,
+      # not any per-container limit - six uncapped JVMs alongside Kafka/Postgres/Redis can
+      # oversubscribe a modest dev machine's RAM badly. 256m is comfortable for this project's
+      # traffic and container count.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     volumes:
       - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:

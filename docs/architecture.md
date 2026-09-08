@@ -776,3 +776,61 @@ all 4 `AuthControllerIntegrationTest` cases). This is the authoritative, machine
 that the Testcontainers setup, the auth flow, and the reactor build are all correct — the entire
 local Docker Desktop saga above was purely an artifact of this one Windows machine's Docker Desktop
 installation, never a defect in OrderFlow itself.
+
+---
+
+## 22. Milestone 8: End-to-End System Validation
+
+Every test in the codebase up to this point, including every "integration test," verified one
+service in isolation - its own Testcontainers Postgres/Kafka, a Kafka message the test itself
+published directly. No test had ever exercised two real services talking to each other: a message
+actually produced by one service's `OutboxPoller`, traveling over real Docker networking through a
+shared Kafka broker, consumed by a second service's real listener. `scripts/e2e-smoke-test.sh`
+closes that gap - it drives the actual `docker compose` stack with curl and asserts on real
+Postgres state across all six services, covering the happy path, insufficient-stock and
+payment-declined failure paths, and a system-level `Idempotency-Key` replay check with every
+service actually running (not mocked).
+
+Unlike every Testcontainers test in this repo, this script is unaffected by the Docker
+Desktop/docker-java incompatibility in §21 - it only uses the plain `docker`/`docker compose` CLI,
+which has worked reliably throughout that entire investigation. Attempting to actually run it
+surfaced two real, previously-invisible bugs that no per-service test could structurally have
+caught, plus a genuine local resource constraint:
+
+1. **Every downstream service's Docker image failed to build.** Each service's `Dockerfile` only
+   ever copied its own `pom.xml` plus `common/pom.xml` into the build context, but the root
+   `pom.xml`'s `<modules>` list now names all six services - Maven's reactor parse requires every
+   declared module to exist on disk before it will honor `-pl <service> -am`, regardless of which
+   module is actually being built. This was invisible because CI has only ever run `mvn -B verify`
+   from the repo root (where every module genuinely is present) - nothing had ever attempted an
+   actual Docker build of any service until this milestone. Fixed by copying every sibling's
+   `pom.xml` (not its `src`) into every service's build stage.
+2. **Every downstream service crashed on startup with `NoClassDefFoundError: io/jsonwebtoken/JwtException`.**
+   `common`'s `JwtValidator` calls into `jjwt-impl`/`jjwt-jackson` at runtime (via Jackson's/JJWT's
+   own `ServiceLoader` wiring), but `common/pom.xml` declared those two artifacts at `test` scope -
+   only `jjwt-api` (interfaces only) was compile-scoped. Every downstream service also redeclared
+   all three at `test` scope in its own POM, purely for `TestJwtFactory`. This meant every service's
+   *test* classpath had a working JWT verifier (test scope always does), but the actual packaged JAR
+   Docker runs did not - `mvn -B verify`'s test classpath made the gap permanently invisible, since
+   it never distinguishes "present for tests" from "present at runtime." Only Auth Service worked,
+   because it separately declares `jjwt-impl`/`jjwt-jackson` at `runtime` scope for its own
+   token-signing need. Fixed at the root: `common/pom.xml` now declares `jjwt-impl`/`jjwt-jackson` at
+   `runtime` scope, and the five downstream services' redundant `test`-scoped redeclarations were
+   removed (Maven's nearest-wins dependency mediation would otherwise let a direct `test`-scope
+   declaration shadow the fixed transitive `runtime`-scope one from `common`).
+3. **This development machine cannot reliably run the full nine-container stack simultaneously.**
+   Total system RAM is 7.7GB, frequently under 1GB free at idle before `docker compose up` is even
+   invoked. An unconstrained JVM sizes its default heap off host-visible memory, not any
+   per-container limit, so six uncapped Spring Boot JVMs plus an uncapped Kafka broker plus
+   Postgres/Redis/Kafka-UI oversubscribed this machine badly, and repeated local run attempts were
+   killed by the OS for memory pressure even after images built successfully. Mitigated (not
+   eliminated) by adding `JAVA_TOOL_OPTIONS: -Xmx256m` to each of the six services and
+   `KAFKA_HEAP_OPTS` to the broker in `docker-compose.yml`, and by having the script start only the
+   nine containers actually needed for the test (omitting `kafka-ui`, a human debugging aid). This is
+   a genuine local resource ceiling, not a code defect - the same category of machine-specific
+   limitation as §21, and handled the same way: verify authoritatively via CI (GitHub-hosted runners
+   provide a clean 7GB with no competing IDE/browser/Docker-Desktop-VM overhead), rather than
+   continuing to fight it locally.
+
+A new CI job, `e2e-smoke-test`, runs after the existing `build-and-test` job and executes this
+script against a real `docker compose up` on the runner.

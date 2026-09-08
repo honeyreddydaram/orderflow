@@ -6,7 +6,15 @@ RUN apk add --no-cache maven
 WORKDIR /workspace
 
 COPY pom.xml .
+# The root pom.xml's <modules> lists every service - Maven's reactor parse requires all of them
+# to exist on disk even though `-pl notification-service -am` below only ever builds this one,
+# so every sibling's pom.xml (not its src) has to be copied in too.
 COPY common/pom.xml common/pom.xml
+COPY auth-service/pom.xml auth-service/pom.xml
+COPY product-service/pom.xml product-service/pom.xml
+COPY order-service/pom.xml order-service/pom.xml
+COPY inventory-service/pom.xml inventory-service/pom.xml
+COPY payment-service/pom.xml payment-service/pom.xml
 COPY notification-service/pom.xml notification-service/pom.xml
 COPY common/src common/src
 COPY notification-service/src notification-service/src

@@ -102,24 +102,12 @@
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
     </dependency>
-    <dependency>
-      <groupId>io.jsonwebtoken</groupId>
-      <artifactId>jjwt-api</artifactId>
-      <version>0.12.6</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.jsonwebtoken</groupId>
-      <artifactId>jjwt-impl</artifactId>
-      <version>0.12.6</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.jsonwebtoken</groupId>
-      <artifactId>jjwt-jackson</artifactId>
-      <version>0.12.6</version>
-      <scope>test</scope>
-    </dependency>
+    <!-- jjwt-api/impl/jackson are NOT redeclared here: common's pom provides jjwt-api at compile
+         scope and jjwt-impl/jjwt-jackson at runtime scope, which transitively covers both this
+         module's production runtime and its test classpath (TestJwtFactory). Redeclaring them
+         here at test scope would shadow common's runtime-scoped versions via Maven's
+         nearest-wins dependency mediation, silently reintroducing the ClassNotFoundException
+         this was fixed for - see common/pom.xml. -->
   </dependencies>
 
   <build>

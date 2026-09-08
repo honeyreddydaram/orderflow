@@ -37,10 +37,30 @@
       <artifactId>jakarta.servlet-api</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- jjwt-api is needed to compile JwtValidator; jjwt-impl/jjwt-jackson are the actual
+         parsing/signature-verification implementation JwtValidator calls into at runtime via
+         ServiceLoader - they must be runtime scope (not test), or every service that depends on
+         common only gets a working JWT verifier in its test classpath, not in the packaged JAR
+         that actually runs in Docker. This exact gap shipped silently for milestones, since no
+         test exercises the packaged JAR - only `mvn -B verify`'s test classpath, which always has
+         every scope on it regardless. Caught in Milestone 8's end-to-end validation, the first
+         time anything actually ran a built container. -->
     <dependency>
       <groupId>io.jsonwebtoken</groupId>
       <artifactId>jjwt-api</artifactId>
       <version>0.12.6</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>0.12.6</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.12.6</version>
+      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -76,18 +96,6 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.jsonwebtoken</groupId>
-      <artifactId>jjwt-impl</artifactId>
-      <version>0.12.6</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.jsonwebtoken</groupId>
-      <artifactId>jjwt-jackson</artifactId>
-      <version>0.12.6</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

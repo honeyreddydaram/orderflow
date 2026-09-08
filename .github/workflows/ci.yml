@@ -23,3 +23,22 @@ jobs:
       # needs for the integration tests added from Milestone 2 onward.
       - name: Build and test (Maven reactor)
         run: mvn -B verify
+
+  e2e-smoke-test:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate dev JWT keypair
+        run: bash docker/generate-jwt-keys.sh
+
+      # Real end-to-end validation against the actual docker-compose stack - see
+      # docs/architecture.md, Milestone 8, and scripts/e2e-smoke-test.sh's header comment for
+      # what this proves that the per-service Testcontainers suites above structurally cannot.
+      - name: Run end-to-end smoke test
+        run: bash scripts/e2e-smoke-test.sh
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
