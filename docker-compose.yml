@@ -124,5 +124,22 @@ services:
       kafka:
         condition: service_healthy
 
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    container_name: orderflow-inventory-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    volumes:
+      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   orderflow-postgres-data:

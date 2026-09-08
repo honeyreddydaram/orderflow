@@ -18,8 +18,12 @@ order creation with synchronous Product Service validation, transactional outbox
 participation (produces `order.created`/`order.confirmed`/`order.failed`, consumes
 `inventory.reserved`/`inventory.reservation-failed`/`payment.completed`/`payment.failed`) built
 against the event schemas Inventory/Payment Service will implement next — see
-[Order Service](#order-service) below. Application services are added incrementally per the
-milestones in the architecture doc.
+[Order Service](#order-service) below. Milestone 5 (Inventory Service) complete: stock model with
+manual optimistic-locking (conditional bulk `UPDATE`, not JPA `@Version`), consumes `order.created`
+for all-or-nothing multi-item reservation, publishes `inventory.reserved`/`inventory.reservation-failed`,
+and consumes `payment.completed`/`payment.failed` to permanently decrement or release reserved stock
+— see [Inventory Service](#inventory-service) below. Application services are added incrementally
+per the milestones in the architecture doc.
 
 **Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
@@ -127,3 +131,43 @@ or payment fails) as Order Service consumes events from Inventory/Payment Servic
 it happen live via Kafka UI at http://localhost:8090 once those services exist. Until then, the
 consumer side can be exercised directly by publishing a matching event onto `inventory.reserved` or
 `payment.completed` (see `OrderControllerIntegrationTest` for the exact message shape).
+
+## Inventory Service
+
+Runs on port 8084. Every endpoint requires an `ADMIN` bearer token — unlike Product Service, there's
+no public read surface, since stock levels are an internal/operational concern, not customer-facing.
+Inventory Service only ever *verifies* tokens, the same public-key-only model as the other services.
+It has no Redis dependency: its admin endpoints have no customer-facing retry/idempotency-key use
+case, unlike order placement.
+
+Create/set stock for a product:
+```
+curl -X POST http://localhost:8084/api/v1/inventory \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"productId": "<product-uuid>", "availableQty": 100}'
+```
+
+Get current stock:
+```
+curl http://localhost:8084/api/v1/inventory/{productId} -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+```
+
+Manually adjust stock (positive or negative delta; rejected if it would drive `availableQty` below
+zero):
+```
+curl -X PUT http://localhost:8084/api/v1/inventory/{productId}/adjust \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"adjustment": -10}'
+```
+
+On `order.created`, Inventory Service attempts an all-or-nothing reservation across every item in
+the order (optimistic locking with bounded retry on version conflicts — see
+[`docs/architecture.md` section 9](docs/architecture.md#9-inventory-concurrency-strategy) for the
+exact conditional-update SQL and the crash-safety argument for why the idempotency marker and the
+reservation outcome are always committed in the same transaction). Success publishes
+`inventory.reserved`; if any item is short, every provisional reservation in the batch is rolled
+back and `inventory.reservation-failed` is published instead. `payment.completed` converts a
+reservation's `reserved_qty` into a permanent decrement; `payment.failed` releases it back to
+`available_qty` — both are also built against event schemas Payment Service will implement next.

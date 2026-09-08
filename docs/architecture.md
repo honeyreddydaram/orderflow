@@ -74,7 +74,9 @@ JSON logs, so a single order's journey can be grepped across all six services.
 - **product_db**: `products` (id, name, description, price, stock_quantity, active, created_at, updated_at)
 - **order_db**: `orders`, `order_items`, `order_status_history`, `outbox_events` (transactional
   outbox), `processed_events` (consumer idempotency table)
-- **inventory_db**: `stock_items` (product_id, available_qty, reserved_qty, version), `reservations`, `processed_events`
+- **inventory_db**: `stock_items` (product_id as PK, available_qty, reserved_qty, version - plus
+  a DB-level `CHECK` constraint that both quantities stay >= 0, belt-and-suspenders beneath the
+  application-level guards), `reservations`, `reservation_items`, `outbox_events`, `processed_events`
 - **payment_db**: `payments`, `payment_attempts`, `processed_events`
 - **notification_db**: `notifications`, `processed_events`
 
@@ -113,10 +115,15 @@ or Order Service requires it); adding it later is a non-breaking additive change
 Unlike Product Service, every endpoint here requires authentication - there is no public read
 surface, since an order always belongs to someone.
 
-**Inventory Service** (`/api/v1/inventory`) — mostly internal/admin, minimal public surface
-- `GET /inventory/{productId}` — current stock (ADMIN, and used internally)
-- `POST /inventory` — create/set stock for a product (ADMIN)
-- `PUT /inventory/{productId}/adjust` — manual stock adjustment (ADMIN)
+**Inventory Service** (`/api/v1/inventory`, port 8084) — implemented in Milestone 5, ADMIN-only,
+no public reads at all (unlike Product Service)
+- `GET /inventory/{productId}` — current stock
+- `POST /inventory` — create/set stock for a product (409 if a row already exists)
+- `PUT /inventory/{productId}/adjust` — manual stock adjustment (signed delta), rejected if it
+  would drive available stock negative
+
+No cross-service validation against Product Service on `POST /inventory` - a deliberate
+decoupling, since this is an ops/seeding operation, not a customer-facing flow.
 
 **Payment Service** (`/api/v1/payments`) — mostly event-driven, thin REST for visibility
 - `GET /payments/{orderId}` — payment record/status for an order (owner or ADMIN)
@@ -229,17 +236,40 @@ progress + explicit undo events, which is the standard, interview-defensible ans
 
 ## 9. Inventory Concurrency Strategy (prevent overselling)
 
-- `stock_items` table has an `available_qty`, `reserved_qty`, and a `@Version` column
-  (optimistic locking via JPA `@Version`).
-- Reservation is a single UPDATE with a WHERE guard:
-  `UPDATE stock_items SET available_qty = available_qty - :qty, reserved_qty = reserved_qty + :qty,
-  version = version + 1 WHERE product_id = :id AND available_qty >= :qty AND version = :version`.
-- On 0 rows affected → optimistic lock conflict or insufficient stock; service retries the read-
-  modify-write a bounded number of times (e.g. 3) on version conflicts, and fails fast (publishes
-  `InventoryReservationFailed`) on genuine insufficient stock.
-- This avoids pessimistic row locks (simpler, no long-held DB locks under Kafka consumer retries)
-  while still guaranteeing correctness under concurrent order bursts for the same product — the
-  classic flash-sale interview question, answered with optimistic concurrency + conditional update
+Implemented in Milestone 5. `stock_items` has `available_qty`, `reserved_qty`, and a plain `version`
+column - deliberately **not** JPA's automatic `@Version` mechanism, since the design calls for a
+manual conditional bulk `UPDATE` combining the version check with a business-invariant check in one
+atomic round trip, which JPA's own optimistic-lock machinery doesn't directly express. All four
+stock mutations share this shape via `StockItemRepository`/`StockMutator`:
+
+```sql
+-- reserve (order.created)
+UPDATE stock_items SET available_qty = available_qty - :qty, reserved_qty = reserved_qty + :qty,
+  version = version + 1 WHERE product_id = :id AND available_qty >= :qty AND version = :version
+-- decrement (payment.completed) and release (payment.failed) both also guard reserved_qty >= :qty,
+-- so a malformed or duplicate mutation can never drive reserved stock negative:
+UPDATE stock_items SET reserved_qty = reserved_qty - :qty, version = version + 1
+  WHERE product_id = :id AND reserved_qty >= :qty AND version = :version
+UPDATE stock_items SET available_qty = available_qty + :qty, reserved_qty = reserved_qty - :qty,
+  version = version + 1 WHERE product_id = :id AND reserved_qty >= :qty AND version = :version
+```
+
+On 0 rows affected, `StockMutator` re-reads the row: if the invariant still holds, it was a version
+conflict, and it retries with the fresh version (bounded at 3 attempts); if the invariant no longer
+holds, it fails fast without retrying. A DB-level `CHECK (available_qty >= 0 AND reserved_qty >= 0)`
+constraint on `stock_items` backs this up as a last-resort defense, beneath even these guards.
+
+Reservation itself is all-or-nothing across every item in an order: `StockReservationWriter`
+attempts each item within one transaction, and if any single item can't be reserved, it calls
+`setRollbackOnly()` and returns a failure result rather than throwing - undoing every other item's
+already-applied reservation for that same order, so a partially-reservable order never ends up
+partially reserved. **Proven under real concurrent load** (`StockItemRepositoryTest.concurrentReservations_neverOversell`):
+10 concurrent threads each requesting 1 unit against `available_qty = 5` results in exactly 5
+successes, 5 failures, and `available_qty` at exactly 0 - never negative, never oversold.
+
+This avoids pessimistic row locks (simpler, no long-held DB locks under Kafka consumer retries)
+while still guaranteeing correctness under concurrent order bursts for the same product — the
+classic flash-sale interview question, answered with optimistic concurrency + conditional update
   rather than `SELECT ... FOR UPDATE` (tradeoff discussed in §19).
 
 ---
@@ -256,6 +286,19 @@ Two layers, both implemented in Order Service (Milestone 4):
    event, 0 for a duplicate. This never throws, so a duplicate delivery is a plain no-op inside the
    same transaction as the business update, not an exception-driven rollback. This makes
    retries/redeliveries safe without relying on Kafka's own exactly-once semantics.
+   **Critically, the marker insert must live INSIDE the same transaction as the business outcome it
+   guards, never as a separate up-front step** - if it were committed before the business work and
+   the process crashed in between, Kafka redelivery would see the event as already processed and
+   skip the unfinished work entirely, permanently losing it. Inventory Service's `order.created`
+   handling (Milestone 5) is the sharpest example: the marker insert, every item's reservation, and
+   the `InventoryReserved` outbox row all commit together in one transaction; if any item can't be
+   reserved, `setRollbackOnly()` rolls back that whole transaction *including the marker*, so the
+   event is genuinely un-processed again, and a *separate* transaction (`InventoryReservationFailureWriter`)
+   re-inserts the marker atomically with the `InventoryReservationFailed` outbox row instead. Proven
+   by `InventoryEventListenerIntegrationTest.reservationSurvivesATransientFailure_beforeCommit_viaKafkaRetry`,
+   which makes the last write in the reservation transaction throw once (simulating a crash right
+   before commit) and confirms Kafka's automatic redelivery completes the reservation exactly once
+   - not lost, not double-applied.
 2. **REST idempotency** for `POST /orders`: client may send an `Idempotency-Key` header. A plain
    "check Redis, then create, then write Redis" has a TOCTOU race - two concurrent requests with
    the same key could both miss the check and both create an order. Instead, Order Service uses an
@@ -456,11 +499,17 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    Consequence of the reorder: no synchronous stock check at order-creation time yet - that arrives
    when Inventory Service is built and starts consuming `order.created`. Verified in CI (87/87
    reactor-wide tests passing at the time, 38 in order-service alone).
-5. **Inventory Service** (next): stock model + optimistic-locking reservation logic, consumes
-   `order.created`, publishes `inventory.reserved`/`inventory.reservation-failed` against the
-   schemas Order Service already committed to; consumes `payment.failed` to release a reservation
-   (compensation).
-6. **Payment Service**: consumes `inventory.reserved`, simulated charge, publishes
+5. **Inventory Service** — done: stock model with manual optimistic-locking (conditional bulk
+   `UPDATE`, not JPA `@Version`), consumes `order.created` (all-or-nothing multi-item reservation),
+   publishes `inventory.reserved`/`inventory.reservation-failed` against the schemas Order Service
+   already committed to; consumes `payment.completed` (permanent decrement) and `payment.failed`
+   (release/compensation) even though Payment Service doesn't exist yet, same pattern as Order
+   Service building against Inventory/Payment's contracts before they existed. No Redis - this
+   service's admin endpoints have no customer-facing retry/idempotency-key use case. Unit,
+   `@WebMvcTest`, `@DataJpaTest` + Testcontainers (incl. the overselling-prevention concurrency
+   test), and Testcontainers (Postgres+Kafka) integration tests including a dedicated
+   crash-before-commit/Kafka-redelivery test.
+6. **Payment Service** (next): consumes `inventory.reserved`, simulated charge, publishes
    `payment.completed`/`payment.failed`.
 7. **Notification Service**: consumes terminal events (`order.confirmed`/`order.failed`),
    simulated send.
