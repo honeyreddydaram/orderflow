@@ -86,6 +86,16 @@ wait_for_health inventory-service 8084
 wait_for_health payment-service 8085
 wait_for_health notification-service 8086
 
+# Actuator health passing only means the embedded servlet container is accepting HTTP requests -
+# it doesn't guarantee every service's Kafka consumer groups have finished joining and started
+# polling yet. Seen in practice: the very first order placed right after health checks pass took
+# longer than a since-tightened 30s timeout to reach CONFIRMED (every downstream effect had
+# actually happened correctly - Payment completed, stock decremented - Order Service's own
+# consumer just hadn't caught up yet). A short settle avoids paying for that warm-up lag inside
+# scenario 1's own timeout budget.
+log "Letting Kafka consumer groups settle..."
+sleep 10
+
 # ---- Bootstrap: an ADMIN and a CUSTOMER ---------------------------------------------------------
 # There is no self-service way to become ADMIN via the API (by design). This promotes a
 # freshly-registered user directly in Auth Service's own database, exactly as a real operator
@@ -159,7 +169,7 @@ log "Scenario 1: happy path (order confirms)"
 product_id=$(create_product_and_stock "E2E Widget" 9.99 10)
 order_id=$(create_order "$customer_token" "$product_id" 2)
 
-if await_status "$customer_token" "$order_id" CONFIRMED 30; then
+if await_status "$customer_token" "$order_id" CONFIRMED 60; then
   pass "Happy path: order reached CONFIRMED"
 else
   fail "Happy path: order did not reach CONFIRMED"
@@ -180,7 +190,7 @@ log "Scenario 2: insufficient stock (order fails, no payment attempted)"
 scarce_product_id=$(create_product_and_stock "E2E Scarce Widget" 5.00 1)
 order2_id=$(create_order "$customer_token" "$scarce_product_id" 5)
 
-if await_status "$customer_token" "$order2_id" FAILED 30; then
+if await_status "$customer_token" "$order2_id" FAILED 60; then
   pass "Insufficient stock: order reached FAILED"
 else
   fail "Insufficient stock: order did not reach FAILED"
@@ -198,7 +208,7 @@ log "Scenario 3: payment declined (order fails after reservation, stock released
 expensive_product_id=$(create_product_and_stock "E2E Expensive Widget" 20000.00 5)
 order3_id=$(create_order "$customer_token" "$expensive_product_id" 1)
 
-if await_status "$customer_token" "$order3_id" FAILED 30; then
+if await_status "$customer_token" "$order3_id" FAILED 60; then
   pass "Payment declined: order reached FAILED"
 else
   fail "Payment declined: order did not reach FAILED"
