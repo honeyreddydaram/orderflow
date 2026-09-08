@@ -13,8 +13,13 @@ Milestone 1 (scaffolding) complete. Milestone 2 (Auth Service) complete: registr
 JWT issuance with rotating refresh tokens, BCrypt, Flyway-managed schema, unit tests, and a
 Testcontainers-based integration test — verified in CI. Milestone 3 (Product Service) complete:
 product CRUD, pagination, Redis-cached reads with scoped cache invalidation on writes — see
-[Product Service](#product-service) below for API examples. Application services are added
-incrementally per the milestones in the architecture doc.
+[Product Service](#product-service) below for API examples. Milestone 4 (Order Service) complete:
+order creation with synchronous Product Service validation, transactional outbox, and full saga
+participation (produces `order.created`/`order.confirmed`/`order.failed`, consumes
+`inventory.reserved`/`inventory.reservation-failed`/`payment.completed`/`payment.failed`) built
+against the event schemas Inventory/Payment Service will implement next — see
+[Order Service](#order-service) below. Application services are added incrementally per the
+milestones in the architecture doc.
 
 **Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
@@ -81,3 +86,44 @@ Delete a product (soft delete — sets `active=false`, evicts the same cache ent
 curl -X DELETE http://localhost:8082/api/v1/products/{id} \
   -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
 ```
+
+## Order Service
+
+Runs on port 8083. Every endpoint requires authentication — unlike Product Service, there's no
+public read surface, since an order always belongs to someone. Order Service only ever *verifies*
+tokens, the same public-key-only model as Product Service.
+
+Create an order (validates each product against Product Service, snapshotting name/price; publishes
+`OrderCreated` via the transactional outbox):
+```
+curl -X POST http://localhost:8083/api/v1/orders \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"items": [{"productId": "<product-uuid>", "quantity": 2}]}'
+```
+
+The `Idempotency-Key` header is optional but recommended for anything that might be retried (e.g. a
+double-tapped "place order" button) — replaying the same key returns the original order (`200`)
+instead of creating a duplicate (`201`), even under concurrent replay.
+
+Get order detail (owner or ADMIN only):
+```
+curl http://localhost:8083/api/v1/orders/{id} -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Lightweight status polling:
+```
+curl http://localhost:8083/api/v1/orders/{id}/status -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Paginated order history for the caller:
+```
+curl "http://localhost:8083/api/v1/orders?page=0&size=20" -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+An order progresses `PENDING → AWAITING_PAYMENT → CONFIRMED` (or `FAILED` if inventory reservation
+or payment fails) as Order Service consumes events from Inventory/Payment Service on Kafka — watch
+it happen live via Kafka UI at http://localhost:8090 once those services exist. Until then, the
+consumer side can be exercised directly by publishing a matching event onto `inventory.reserved` or
+`payment.completed` (see `OrderControllerIntegrationTest` for the exact message shape).

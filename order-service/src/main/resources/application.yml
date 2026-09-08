@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/order_db
+    username: orderflow
+    password: orderflow
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: order-service
+
+server:
+  port: 8083
+
+orderflow:
+  jwt:
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:docker/secrets/jwt/public_key.pem}
+  services:
+    product-service:
+      base-url: ${PRODUCT_SERVICE_BASE_URL:http://localhost:8082}
+  kafka:
+    partitions: 3
+    replication-factor: 1
+  outbox:
+    poll-interval-ms: 500
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    com.orderflow: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://postgres:5432/order_db
+  data:
+    redis:
+      host: redis
+      port: 6379
+  kafka:
+    bootstrap-servers: kafka:19092
+
+orderflow:
+  jwt:
+    public-key-location: file:${JWT_PUBLIC_KEY_PATH:/run/secrets/jwt/public_key.pem}
+  services:
+    product-service:
+      base-url: ${PRODUCT_SERVICE_BASE_URL:http://product-service:8082}

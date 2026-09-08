@@ -104,5 +104,25 @@ services:
       redis:
         condition: service_healthy
 
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    container_name: orderflow-order-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      PRODUCT_SERVICE_BASE_URL: http://product-service:8082
+    volumes:
+      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   orderflow-postgres-data:

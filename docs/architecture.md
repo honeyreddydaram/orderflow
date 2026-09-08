@@ -72,7 +72,8 @@ JSON logs, so a single order's journey can be grepped across all six services.
 
 - **auth_db**: `users`, `roles`, `refresh_tokens`
 - **product_db**: `products` (id, name, description, price, stock_quantity, active, created_at, updated_at)
-- **order_db**: `orders`, `order_items`, `order_status_history`, `processed_events` (idempotency table)
+- **order_db**: `orders`, `order_items`, `order_status_history`, `outbox_events` (transactional
+  outbox), `processed_events` (consumer idempotency table)
 - **inventory_db**: `stock_items` (product_id, available_qty, reserved_qty, version), `reservations`, `processed_events`
 - **payment_db**: `payments`, `payment_attempts`, `processed_events`
 - **notification_db**: `notifications`, `processed_events`
@@ -102,11 +103,15 @@ services).
 No `category` filter/field yet - deferred until a real need for it appears (e.g. when the frontend
 or Order Service requires it); adding it later is a non-breaking additive change.
 
-**Order Service** (`/api/v1/orders`)
-- `POST /orders` — create order from cart items (CUSTOMER, JWT)
+**Order Service** (`/api/v1/orders`, port 8083) — implemented in Milestone 4
+- `POST /orders` — create order from cart items (any authenticated user, JWT; optional
+  `Idempotency-Key` header - see section 10)
 - `GET /orders/{id}` — order detail + status (owner or ADMIN)
 - `GET /orders?page=&size=` — paginated order history for current user
 - `GET /orders/{id}/status` — lightweight polling endpoint for frontend status updates
+
+Unlike Product Service, every endpoint here requires authentication - there is no public read
+surface, since an order always belongs to someone.
 
 **Inventory Service** (`/api/v1/inventory`) — mostly internal/admin, minimal public surface
 - `GET /inventory/{productId}` — current stock (ADMIN, and used internally)
@@ -143,6 +148,15 @@ Dead-letter topics (mirror + `.DLT` suffix), one per consumer topic:
 Partitioning: all topics keyed by `orderId` so events for a given order are strictly ordered within
 a partition — critical for correctness of the saga without extra coordination. Default 3 partitions
 per topic locally.
+
+**Provisioning (Milestone 4):** rather than relying solely on the broker's auto-create setting,
+Order Service explicitly declares every topic and DLT it produces to or consumes from as a
+`NewTopic` Spring bean (`KafkaTopicConfig`), with partitions/replication-factor overridable via
+`orderflow.kafka.partitions`/`orderflow.kafka.replication-factor` (defaults: 3 partitions, 1
+replica, matching the single-broker local/CI KRaft cluster - override the replication factor for a
+real multi-broker deployment). `NewTopic` bean declarations are idempotent, so Inventory and
+Payment Service can declare the same topics again once built without conflict. Broker auto-create
+remains enabled as a fallback safety net, not the primary mechanism.
 
 ---
 
@@ -232,16 +246,26 @@ progress + explicit undo events, which is the standard, interview-defensible ans
 
 ## 10. Idempotency Strategy
 
-Two layers:
+Two layers, both implemented in Order Service (Milestone 4):
 
 1. **Kafka consumer idempotency**: every consuming service has a `processed_events` table keyed on
-   `eventId` (UUID from the envelope). Consumer logic runs in a DB transaction that inserts into
-   `processed_events` and does the business update together; a unique-constraint violation on
-   `eventId` means it's a redelivery → ack and skip. This makes retries/redeliveries safe without
-   relying on Kafka's own exactly-once semantics.
-2. **REST idempotency** for `POST /orders`: client may send an `Idempotency-Key` header; Order
-   Service stores the key → order ID mapping in Redis (short TTL, e.g. 24h) so a retried "place
-   order" click doesn't double-create.
+   `eventId` (UUID from the envelope), unique-constrained. Rather than a plain `save()` (which
+   throws `DataIntegrityViolationException` on a duplicate and can poison the surrounding
+   transaction), the actual insert uses a native
+   `INSERT ... ON CONFLICT (event_id) DO NOTHING` returning the affected-row count - 1 for a new
+   event, 0 for a duplicate. This never throws, so a duplicate delivery is a plain no-op inside the
+   same transaction as the business update, not an exception-driven rollback. This makes
+   retries/redeliveries safe without relying on Kafka's own exactly-once semantics.
+2. **REST idempotency** for `POST /orders`: client may send an `Idempotency-Key` header. A plain
+   "check Redis, then create, then write Redis" has a TOCTOU race - two concurrent requests with
+   the same key could both miss the check and both create an order. Instead, Order Service uses an
+   atomic `SET key PENDING NX EX <ttl>` as a reservation: only one concurrent caller can ever win
+   it. The winner creates the order and resolves the key to the real order id (or deletes the key
+   on failure, so the client can retry); every other concurrent caller either gets the losing
+   `NX` result and polls briefly for the winner's result, or - if it arrives after the winner
+   finished - reads the resolved order id directly. Proven under real concurrent load in
+   `OrderIdempotencyConcurrencyTest` (10 simultaneous requests, same key → exactly one order and
+   one `OrderCreated` outbox row).
 
 ---
 
@@ -405,24 +429,32 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    service), unit + `@WebMvcTest` + `@DataJpaTest` + Testcontainers (Postgres + Redis) tests,
    verified in CI (49/49 reactor-wide tests passing at the time). Independent of everything else
    besides Auth's JWT contract.
-4. **Inventory Service**: stock model + optimistic-locking reservation logic + REST admin endpoints,
-   fully unit/integration tested in isolation (no Kafka yet — test the concurrency-safe update
-   directly).
-5. **Order Service (core, no Kafka yet)**: order creation persisting `PENDING`, sync REST validation
-   call to Product Service, order history/pagination.
-6. **Kafka wiring — happy path**: introduce `order.created` → Inventory reserves → publishes
-   `inventory.reserved`. Add outbox pattern to Order and Inventory at this point (§12).
-7. **Payment Service**: consumes `inventory.reserved`, simulated charge, publishes
+4. **Order Service** — done, **reordered ahead of Inventory Service** (originally planned as
+   Milestone 5, after Inventory): order creation with synchronous Product Service validation
+   (price/existence snapshot into `order_items`), transactional outbox (first use in the project -
+   `outbox_events` + `OutboxPoller`), and the full saga consumer surface built against the
+   schemas already fixed in section 6 - `inventory.reserved`, `inventory.reservation-failed`,
+   `payment.completed`, `payment.failed` - even though Inventory/Payment Service don't exist yet.
+   This means idempotency (`processed_events`, conflict-safe upsert), retry/DLT, and Kafka topic
+   provisioning (§5/§11) were all built here on the first real Kafka consumer in the codebase,
+   rather than deferred to a later "Kafka wiring" milestone as originally planned. Concurrent
+   Idempotency-Key safety proven under real concurrent load (`OrderIdempotencyConcurrencyTest`);
+   duplicate Kafka delivery proven to transition exactly once (`OrderControllerIntegrationTest`).
+   Consequence of the reorder: no synchronous stock check at order-creation time yet - that arrives
+   when Inventory Service is built and starts consuming `order.created`.
+5. **Inventory Service** (next): stock model + optimistic-locking reservation logic, consumes
+   `order.created`, publishes `inventory.reserved`/`inventory.reservation-failed` against the
+   schemas Order Service already committed to; consumes `payment.failed` to release a reservation
+   (compensation).
+6. **Payment Service**: consumes `inventory.reserved`, simulated charge, publishes
    `payment.completed`/`payment.failed`.
-8. **Close the loop**: Order consumes `payment.completed`/`payment.failed` → `CONFIRMED`/`FAILED`;
-   Inventory consumes `payment.failed` to release reservation (compensation).
-9. **Notification Service**: consumes terminal events, simulated send.
-10. **Idempotency + retry/DLT hardening** across all consumers (processed_events tables, error
-    handlers, DLT topics) — retrofit once the happy/failure paths are proven end-to-end.
-11. **Cross-cutting polish**: correlation IDs everywhere, structured JSON logging, global exception
-    handlers per service, Actuator on all services.
-12. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
-    overselling; kill-a-consumer-mid-processing test to prove idempotent redelivery.
+7. **Notification Service**: consumes terminal events (`order.confirmed`/`order.failed`),
+   simulated send.
+8. **Cross-cutting polish**: any remaining gaps in correlation IDs, structured JSON logging, global
+   exception handlers, Actuator - across whichever services need it once 5-7 are built.
+9. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
+   overselling; kill-a-consumer-mid-processing test to prove idempotent redelivery end-to-end
+   across real services (Order Service's own redelivery safety is already proven per-service).
 13. **CI maturity**: full GitHub Actions matrix (build, unit, Testcontainers integration) on PR;
     Docker image build job.
 14. **Frontend (React + TS)**: login/register, product browsing, cart, order placement, order status

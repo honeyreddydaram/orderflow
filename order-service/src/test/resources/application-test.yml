@@ -1,0 +1,10 @@
+orderflow:
+  jwt:
+    public-key-location: classpath:keys/public_key.pem
+  outbox:
+    poll-interval-ms: 200
+
+logging:
+  level:
+    root: WARN
+    com.orderflow: DEBUG
