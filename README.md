@@ -24,8 +24,11 @@ for all-or-nothing multi-item reservation, publishes `inventory.reserved`/`inven
 and consumes `payment.completed`/`payment.failed` to permanently decrement or release reserved stock
 — see [Inventory Service](#inventory-service) below. Milestone 6 (Payment Service) complete: consumes
 `inventory.reserved`, decides approve/decline with a deterministic amount-threshold rule, publishes
-`payment.completed`/`payment.failed` — see [Payment Service](#payment-service) below. Application
-services are added incrementally per the milestones in the architecture doc.
+`payment.completed`/`payment.failed` — see [Payment Service](#payment-service) below. Milestone 7
+(Notification Service) complete: consumes `order.confirmed`/`order.failed` and simulates sending a
+notification — the last saga participant, and the first service with no transactional outbox, since
+it publishes nothing downstream — see [Notification Service](#notification-service) below.
+Application services are added incrementally per the milestones in the architecture doc.
 
 **Known issue:** on this project's primary dev machine (Windows + Docker Desktop), the
 Testcontainers-based integration tests cannot run reliably locally — see
@@ -195,3 +198,24 @@ descriptive reason, otherwise it approves with a generated transaction reference
 randomly, so both the approve and decline paths are reproducible in tests. Approval publishes
 `payment.completed`; decline publishes `payment.failed`, both already consumed by Order Service
 (order confirmation/failure) and Inventory Service (permanent decrement/release).
+
+## Notification Service
+
+Runs on port 8086. The last saga participant, and the first service that publishes nothing
+downstream — there's no transactional outbox here, since nothing consumes "a notification was
+sent." Every endpoint requires authentication; the one REST endpoint is inherently self-scoped
+(the caller's own notifications), so there's no separate ownership check the way Order/Payment
+Service need. Notification Service only ever *verifies* tokens, the same public-key-only model as
+the other services. No Redis, no concurrency machinery.
+
+List the caller's own notifications, newest first:
+```
+curl "http://localhost:8086/api/v1/notifications?page=0&size=20" -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+On `order.confirmed`/`order.failed`, Notification Service simulates sending a notification — no
+real email/SMS provider integration in v1 — by persisting a `notifications` row and logging it via
+a concrete `NotificationSender` component. Duplicate deliveries are prevented the same way as every
+other consumer in the system: a `processed_events` marker committed in the same transaction as the
+notification row, so a crash between "marked processed" and "notification recorded" can never
+happen (see `docs/architecture.md` section 10/12).

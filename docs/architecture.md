@@ -81,7 +81,10 @@ JSON logs, so a single order's journey can be grepped across all six services.
   `outbox_events`, `processed_events` - no `payment_attempts` (dropped from the original sketch: v1
   has no retry-of-a-declined-charge flow, a decline is terminal, so there's nothing an attempts-audit
   table would record beyond what `payments` itself already holds)
-- **notification_db**: `notifications`, `processed_events`
+- **notification_db**: `notifications` (order_id, user_id, type, subject, message - no unique
+  constraint, since nothing looks up a notification by orderId), `processed_events` - no
+  `outbox_events`, unlike every other service (see section 12): this is the end of the saga, so
+  there's nothing further to publish
 
 No service reaches into another's schema. Product data needed by Order (name/price snapshot) is
 copied into `order_items` at order-creation time (classic saga pattern: snapshot, don't join across
@@ -131,8 +134,12 @@ decoupling, since this is an ops/seeding operation, not a customer-facing flow.
 **Payment Service** (`/api/v1/payments`) — mostly event-driven, thin REST for visibility
 - `GET /payments/{orderId}` — payment record/status for an order (owner or ADMIN)
 
-**Notification Service** — no meaningful public REST API; optionally:
-- `GET /notifications?userId=` — for demo/debugging, list sent notifications
+**Notification Service** (`/api/v1/notifications`, port 8086) — implemented in Milestone 7
+- `GET /notifications?page=&size=` — the caller's own notifications, paginated, newest first
+
+No `?userId=` query param (the original sketch) - letting any authenticated caller pass an
+arbitrary `userId` would be an IDOR hole. Self-scoped only, like Order Service's `GET /orders`; no
+ADMIN override, since nothing in the spec requires one.
 
 All services expose Spring Boot Actuator (`/actuator/health`, `/actuator/info`, `/actuator/metrics`)
 unauthenticated on a separate management port where feasible.
@@ -350,6 +357,12 @@ Two layers, both implemented in Order Service (Milestone 4):
   publish failed" dual-write bug without needing CDC infrastructure.
 - Order status is the single source of truth for "what happened"; consumers never assume success
   until they observe the confirming event.
+- **Exception - Notification Service has no outbox at all.** It's the end of the saga: nothing
+  consumes "a notification was sent," so there's no `OutboxEvent` entity, `OutboxWriter`, or
+  `OutboxPoller`. Its `processed_events` marker still commits in the same transaction as the
+  `Notification` row write, for the same crash-safety reason as everywhere else - the pattern that
+  changes is what gets committed alongside the marker, not whether the marker's transaction boundary
+  matters.
 
 **Two Hibernate/Postgres gotchas hit while implementing this (Order Service) that will recur in
 Inventory/Payment Service unless watched for:**
@@ -552,8 +565,18 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    correctly on the first attempt using the two Testcontainers-test gotchas paid for in Milestone 5
    (see section 12). Verified in CI (154/154 reactor-wide tests passing at the time, 20 in
    payment-service alone).
-7. **Notification Service** (next): consumes terminal events (`order.confirmed`/`order.failed`),
-   simulated send.
+7. **Notification Service** — done: consumes `order.confirmed`/`order.failed` and simulates sending
+   a notification (a concrete `NotificationSender` logs it - no real email/SMS provider). The last
+   saga participant, and the first service with no transactional outbox at all - it produces nothing
+   downstream, so there's nothing to publish (see section 12). `processed_events` idempotency and
+   Kafka retry/DLT are otherwise identical to every other consumer. REST surface is a single
+   self-scoped, paginated `GET /api/v1/notifications` (see section 4) rather than the originally-
+   sketched `?userId=` param, which would have been an IDOR hole. Unit, `@WebMvcTest`,
+   `@DataJpaTest` + Testcontainers, and Testcontainers (Postgres+Kafka) integration tests including
+   a crash-before-commit/Kafka-redelivery test targeting the concrete `NotificationSender.send` -
+   built correctly on the first attempt, CI green with zero fix-up commits, applying the Milestone
+   5/6 lessons (section 12) from the start rather than rediscovering them. Verified in CI (167/167
+   reactor-wide tests passing at the time, 13 in notification-service alone).
 8. **Cross-cutting polish**: any remaining gaps in correlation IDs, structured JSON logging, global
    exception handlers, Actuator - across whichever services need it once 5-7 are built.
 9. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
