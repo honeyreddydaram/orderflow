@@ -29,4 +29,13 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$SIGNING_DIR/
 openssl rsa -pubout -in "$SIGNING_DIR/private_key.pem" -out "$SIGNING_DIR/public_key.pem"
 cp "$SIGNING_DIR/public_key.pem" "$PUBLIC_DIR/public_key.pem"
 
+# openssl genpkey defaults to 600 (owner-only). The container reads this file as its own
+# non-root `orderflow` user (see auth-service/Dockerfile), a different UID than whatever
+# generated the key, so a bind mount of an unreadable-by-others file fails with
+# "Permission denied" on a real Linux Docker host - invisible on this Windows machine, since
+# Docker Desktop's volume mounting doesn't enforce Unix file permissions the same way, but it
+# broke every run in CI. These are throwaway dev/CI keys, never committed, regenerated per
+# environment, so relaxing to world-readable is fine.
+chmod 644 "$SIGNING_DIR/private_key.pem" "$SIGNING_DIR/public_key.pem" "$PUBLIC_DIR/public_key.pem"
+
 echo "Generated dev JWT keypair in $SIGNING_DIR (private+public) and $PUBLIC_DIR (public only)"
