@@ -45,8 +45,6 @@ class PaymentRepositoryTest {
     private OutboxEventRepository outboxEventRepository;
     @Autowired
     private ProcessedEventRepository processedEventRepository;
-    @Autowired
-    private jakarta.persistence.EntityManager entityManager;
 
     @Test
     void findByOrderId_returnsSavedPayment() {
@@ -66,10 +64,12 @@ class PaymentRepositoryTest {
         paymentRepository.saveAndFlush(Payment.completed(orderId, UUID.randomUUID(), new BigDecimal("9.99"), "TXN-1"));
 
         Payment duplicate = Payment.completed(orderId, UUID.randomUUID(), new BigDecimal("19.99"), "TXN-2");
-        assertThatThrownBy(() -> {
-            paymentRepository.save(duplicate);
-            entityManager.flush();
-        }).isInstanceOf(DataIntegrityViolationException.class);
+        // saveAndFlush (not save + a raw entityManager.flush()) is required here: Spring's
+        // persistence-exception translation only intercepts calls made through the repository
+        // proxy, not direct EntityManager calls, so a raw flush() would surface Hibernate's
+        // untranslated ConstraintViolationException instead.
+        assertThatThrownBy(() -> paymentRepository.saveAndFlush(duplicate))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
