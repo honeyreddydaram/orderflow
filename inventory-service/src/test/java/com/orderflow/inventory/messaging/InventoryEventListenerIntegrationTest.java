@@ -15,6 +15,7 @@ import com.orderflow.inventory.repository.OutboxEventRepository;
 import com.orderflow.inventory.repository.ProcessedEventRepository;
 import com.orderflow.inventory.repository.ReservationRepository;
 import com.orderflow.inventory.repository.StockItemRepository;
+import com.orderflow.inventory.service.OutboxWriter;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
@@ -68,12 +69,14 @@ class InventoryEventListenerIntegrationTest {
 
     @Autowired
     private StockItemRepository stockItemRepository;
-    @SpyBean
+    @Autowired
     private ReservationRepository reservationRepository;
     @Autowired
     private OutboxEventRepository outboxEventRepository;
     @Autowired
     private ProcessedEventRepository processedEventRepository;
+    @SpyBean
+    private OutboxWriter outboxWriter;
 
     private KafkaTemplate<String, String> testProducer;
     private final ObjectMapper objectMapper = JsonMapper.builder().addModule(new JavaTimeModule()).build();
@@ -258,10 +261,10 @@ class InventoryEventListenerIntegrationTest {
     /**
      * The correctness proof for the transaction-boundary fix: simulate a crash AFTER the
      * processed_events marker would have been written but BEFORE the transaction commits, by
-     * making the very last write in the reservation transaction (Reservation.save) throw once.
-     * The whole transaction - including the processed_events insert - must roll back, Spring
-     * Kafka must redeliver, and the retry must complete the reservation exactly once: not lost,
-     * not double-applied.
+     * making the very last write in the reservation transaction (the InventoryReserved outbox
+     * write) throw once. The whole transaction - including the processed_events insert and the
+     * reservation itself - must roll back, Spring Kafka must redeliver, and the retry must
+     * complete the reservation exactly once: not lost, not double-applied.
      */
     @Test
     void reservationSurvivesATransientFailure_beforeCommit_viaKafkaRetry() {
@@ -271,7 +274,7 @@ class InventoryEventListenerIntegrationTest {
 
         Mockito.doThrow(new RuntimeException("simulated crash before commit"))
                 .doCallRealMethod()
-                .when(reservationRepository).save(Mockito.any());
+                .when(outboxWriter).write(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
 
         publish("order.created", orderId, "OrderCreated",
                 new OrderCreatedPayload(orderId, UUID.randomUUID(),

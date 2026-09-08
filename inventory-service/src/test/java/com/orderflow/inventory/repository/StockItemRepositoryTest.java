@@ -8,8 +8,11 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -49,6 +52,8 @@ class StockItemRepositoryTest {
     private StockItemRepository stockItemRepository;
     @Autowired
     private jakarta.persistence.EntityManager entityManager;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void tryReserve_succeeds_whenSufficientStockAndCorrectVersion() {
@@ -164,15 +169,29 @@ class StockItemRepositoryTest {
         assertThat(finalState.getReservedQty()).isEqualTo(initialAvailable);
     }
 
-    /** Each thread needs its own retry loop against version conflicts - mirrors StockMutator's shape. */
+    /**
+     * Each thread needs its own retry loop against version conflicts - mirrors StockMutator's
+     * shape. Each attempt runs in its own freshly-started transaction (REQUIRES_NEW): the test
+     * method itself runs with propagation NOT_SUPPORTED so genuinely concurrent threads/connections
+     * are exercised, which means there is no ambient transaction for the @Modifying tryReserve
+     * query to run in unless one is opened explicitly here.
+     */
     private boolean reserveOneWithRetry(UUID productId) {
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
         for (int attempt = 0; attempt < 10; attempt++) {
-            StockItem current = stockItemRepository.findById(productId).orElseThrow();
-            if (current.getAvailableQty() < 1) {
+            Boolean result = transactionTemplate.execute(status -> {
+                StockItem current = stockItemRepository.findById(productId).orElseThrow();
+                if (current.getAvailableQty() < 1) {
+                    return null;
+                }
+                return stockItemRepository.tryReserve(productId, 1, current.getVersion()) > 0;
+            });
+            if (result == null) {
                 return false;
             }
-            int affected = stockItemRepository.tryReserve(productId, 1, current.getVersion());
-            if (affected > 0) {
+            if (result) {
                 return true;
             }
         }
