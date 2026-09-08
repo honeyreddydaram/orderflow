@@ -581,15 +581,17 @@ resource-server services — kept intentionally small to avoid it becoming a dum
    `docker compose` stack (no mocks, no Testcontainers) through the happy path, both failure paths,
    and a system-level `Idempotency-Key` replay, asserting on real Postgres state across all six
    services. Found and fixed four real, previously-invisible bugs no per-service test could
-   structurally have caught (see section 22): a Docker multi-module build failure, a
-   `jjwt-impl`/`jjwt-jackson` runtime-scope gap that crashed every downstream service's JWT
-   verification in production while every test suite stayed green, a JWT-key file-permission bug
-   that only reproduced on a real Linux Docker host, and a local (Windows, 7.7GB RAM) resource
-   ceiling mitigated with per-service JVM heap caps. Also closed a security gap (the JWT private
-   signing key was mounted into every service, not just Auth Service) and an availability gap (no
-   timeout on Order Service's synchronous call to Product Service), and added the previously-missing
-   "message permanently fails and lands on its `.DLT` topic" test to all four Kafka consumers.
-   New `e2e-smoke-test` CI job verified green: 15/15 assertions passing.
+   structurally have caught, plus one real async-timing characteristic (see section 22): a Docker
+   multi-module build failure, a `jjwt-impl`/`jjwt-jackson` runtime-scope gap that crashed every
+   downstream service's JWT verification in production while every test suite stayed green, a
+   JWT-key file-permission bug that only reproduced on a real Linux Docker host, a local (Windows,
+   7.7GB RAM) resource ceiling mitigated with per-service JVM heap caps, and a Kafka
+   consumer-group warm-up lag that only ever affected whichever scenario ran first. Also closed a
+   security gap (the JWT private signing key was mounted into every service, not just Auth
+   Service) and an availability gap (no timeout on Order Service's synchronous call to Product
+   Service), and added the previously-missing "message permanently fails and lands on its `.DLT`
+   topic" test to all four Kafka consumers. `e2e-smoke-test` CI job verified green across multiple
+   consecutive runs: 15/15 assertions passing.
 9. **Cross-cutting polish** (next): any remaining gaps in correlation IDs, structured JSON logging,
    global exception handlers, Actuator - across whichever services still need it.
 10. **Concurrency/chaos testing**: parallel-order load test against one low-stock SKU to prove no
@@ -852,11 +854,23 @@ caught, plus a genuine local resource constraint:
    enforce Unix file permissions the same way - it only ever failed in CI. Fixed by having
    `generate-jwt-keys.sh` `chmod 644` the generated keys: they're throwaway dev/CI keys, never
    committed and regenerated per environment, so world-readable is a safe, minimal fix.
+5. **Not a bug, but a real timing characteristic**: with all four fixes above in place, one CI run
+   still failed - order 1 sat at `AWAITING_PAYMENT` for the script's full 30-second timeout, yet a
+   direct query moments later showed the payment had actually completed and stock had actually
+   decremented correctly. The saga was correct; Order Service's own Kafka consumer simply hadn't
+   caught up yet. Actuator health passing only proves the embedded servlet container accepts HTTP
+   requests - it says nothing about whether a service's Kafka consumer groups have finished joining
+   and started polling, which takes a few extra seconds after startup. This only ever showed up for
+   whichever scenario happened to run first, immediately after every health check passed. Fixed by
+   adding a 10-second settle after all six health checks pass and widening the status-transition
+   timeouts from 30s to 60s - not by weakening any assertion, since the underlying data was already
+   proven correct.
 
 A new CI job, `e2e-smoke-test`, runs after the existing `build-and-test` job and executes this
-script against a real `docker compose up` on the runner. **Result: green, first time all four
-fixes above were in place** - 15/15 assertions pass (happy path fully confirms with the correct
-payment/inventory/notification side effects; both failure paths leave the correct partial state
-behind; the system-level Idempotency-Key replay returns the same order exactly once) - the
+script against a real `docker compose up` on the runner. **Result: green across multiple
+consecutive runs** with all five findings above addressed - 15/15 assertions pass (happy path fully
+confirms with the correct payment/inventory/notification side effects; both failure paths leave the
+correct partial state behind; the system-level Idempotency-Key replay returns the same order
+exactly once) - the
 authoritative, machine-independent proof that the six services, wired together for real, behave
 exactly as every per-service test already claimed in isolation.
