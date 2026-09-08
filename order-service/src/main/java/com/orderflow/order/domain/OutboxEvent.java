@@ -3,7 +3,6 @@ package com.orderflow.order.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -36,8 +35,10 @@ public class OutboxEvent {
     @Column(nullable = false, length = 100)
     private String topic;
 
-    @Lob
-    @Column(nullable = false)
+    // Deliberately not @Lob: on Postgres, Hibernate maps @Lob String to the `oid` large-object
+    // type by default, which doesn't match a plain `TEXT` column (see V1__init.sql) and fails
+    // schema validation. TEXT has no practical size limit, so @Lob buys nothing here anyway.
+    @Column(nullable = false, columnDefinition = "TEXT")
     private String payload;
 
     @Column(name = "correlation_id", nullable = false)
