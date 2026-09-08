@@ -141,5 +141,22 @@ services:
       kafka:
         condition: service_healthy
 
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    container_name: orderflow-payment-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    volumes:
+      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   orderflow-postgres-data:
