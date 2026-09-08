@@ -106,6 +106,36 @@ class InventoryEventListenerIntegrationTest {
         }
     }
 
+    /**
+     * Polls a dead-letter topic from the earliest offset for a record keyed on {@code orderId}.
+     * Uses a raw consumer (not a Spring-managed container) with a fresh group id so it always
+     * reads from the beginning, regardless of what the application's own DLT-side consumers (if
+     * any) have already committed.
+     */
+    private String awaitDltMessage(String dltTopic, UUID orderId, Duration timeout) {
+        Map<String, Object> props = new HashMap<>();
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG, "dlt-test-" + UUID.randomUUID());
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+                org.apache.kafka.common.serialization.StringDeserializer.class);
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                org.apache.kafka.common.serialization.StringDeserializer.class);
+        try (var consumer = new org.apache.kafka.clients.consumer.KafkaConsumer<String, String>(props)) {
+            consumer.subscribe(List.of(dltTopic));
+            Instant deadline = Instant.now().plus(timeout);
+            while (Instant.now().isBefore(deadline)) {
+                var records = consumer.poll(Duration.ofMillis(300));
+                for (var record : records) {
+                    if (orderId.toString().equals(record.key())) {
+                        return record.value();
+                    }
+                }
+            }
+        }
+        throw new AssertionError("No message for order " + orderId + " landed on " + dltTopic + " within " + timeout);
+    }
+
     private void awaitTrue(BooleanSupplier condition, Duration timeout) {
         Instant deadline = Instant.now().plus(timeout);
         while (Instant.now().isBefore(deadline)) {
@@ -308,5 +338,35 @@ class InventoryEventListenerIntegrationTest {
         Integer insertedAgain = new TransactionTemplate(transactionManager)
                 .execute(status -> processedEventRepository.insertIfAbsent(UUID.randomUUID(), eventId));
         assertThat(insertedAgain).isEqualTo(0);
+    }
+
+    /**
+     * Every other test in this class proves "fails once, Kafka redelivers, retry succeeds." None
+     * of them - nor any test anywhere else in the codebase - had ever proven the other half of the
+     * retry/DLT contract: a message that fails on EVERY attempt must have its retries exhaust and
+     * actually land on the dead-letter topic (docs/architecture.md section 11), not spin forever or
+     * silently vanish. Unlike the crash-before-commit tests, the spy here has no
+     * doCallRealMethod() fallback - it throws on every delivery attempt.
+     */
+    @Test
+    void orderCreated_landsOnDeadLetterTopic_whenEveryAttemptFails() {
+        UUID productId = seedStock(10);
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+
+        Mockito.doThrow(new RuntimeException("permanently broken"))
+                .when(outboxWriter).write(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+
+        publish("order.created", orderId, "OrderCreated",
+                new OrderCreatedPayload(orderId, UUID.randomUUID(),
+                        List.of(new OrderCreatedPayload.Item(productId, 3, new BigDecimal("9.99"))), new BigDecimal("29.97")),
+                eventId);
+
+        // 4 attempts with 500ms/x2 backoff exhaust in ~7.5s; generous margin for the DLT publish.
+        String dltMessage = awaitDltMessage("order.created.DLT", orderId, Duration.ofSeconds(20));
+        assertThat(dltMessage).contains(orderId.toString());
+
+        // Every attempt failed and rolled back - no reservation was ever committed.
+        assertThat(reservationRepository.findByOrderIdWithItems(orderId)).isEmpty();
     }
 }

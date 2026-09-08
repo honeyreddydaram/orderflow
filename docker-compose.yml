@@ -79,10 +79,18 @@ services:
     container_name: orderflow-auth-service
     environment:
       SPRING_PROFILES_ACTIVE: docker
+    # Only Auth Service ever signs tokens, so only it gets the private key - see
+    # docker/generate-jwt-keys.sh and docs/architecture.md section 13.
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-signing:/run/secrets/jwt:ro
     ports:
       - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,9 +103,15 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
       - "8082:8082"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,15 +127,25 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       PRODUCT_SERVICE_BASE_URL: http://product-service:8082
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
       - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      # Order creation calls Product Service synchronously - without this, order-service could
+      # start accepting requests before product-service is ready to answer them.
+      product-service:
         condition: service_healthy
 
   inventory-service:
@@ -132,9 +156,15 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
       - "8084:8084"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -149,9 +179,15 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
       - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,9 +202,15 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
-      - ./docker/secrets/jwt:/run/secrets/jwt:ro
+      - ./docker/secrets/jwt-public:/run/secrets/jwt:ro
     ports:
       - "8086:8086"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

@@ -16,7 +16,8 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-RUN addgroup -S orderflow && adduser -S orderflow -G orderflow
+# curl is needed for docker-compose.yml's healthcheck (Alpine ships neither curl nor wget by default).
+RUN apk add --no-cache curl && addgroup -S orderflow && adduser -S orderflow -G orderflow
 COPY --from=build /workspace/auth-service/target/auth-service.jar app.jar
 USER orderflow
 

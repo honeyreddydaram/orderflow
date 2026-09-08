@@ -15,12 +15,15 @@ import com.orderflow.order.messaging.event.InventoryReservationFailedPayload;
 import com.orderflow.order.messaging.event.InventoryReservedPayload;
 import com.orderflow.order.messaging.event.PaymentCompletedPayload;
 import com.orderflow.order.repository.OutboxEventRepository;
+import com.orderflow.order.service.OutboxWriter;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
@@ -92,6 +95,9 @@ class OrderControllerIntegrationTest {
     @MockBean
     private ProductServiceClient productServiceClient;
 
+    @SpyBean
+    private OutboxWriter outboxWriter;
+
     private KafkaTemplate<String, String> testProducer;
 
     private KafkaTemplate<String, String> testProducer() {
@@ -145,6 +151,35 @@ class OrderControllerIntegrationTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Polls a dead-letter topic from the earliest offset for a record keyed on {@code orderId}.
+     * Uses a raw consumer (not a Spring-managed container) with a fresh group id so it always
+     * reads from the beginning.
+     */
+    private String awaitDltMessage(String dltTopic, UUID orderId, Duration timeout) {
+        Map<String, Object> props = new HashMap<>();
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG, "dlt-test-" + UUID.randomUUID());
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+                org.apache.kafka.common.serialization.StringDeserializer.class);
+        props.put(org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                org.apache.kafka.common.serialization.StringDeserializer.class);
+        try (var consumer = new org.apache.kafka.clients.consumer.KafkaConsumer<String, String>(props)) {
+            consumer.subscribe(List.of(dltTopic));
+            Instant deadline = Instant.now().plus(timeout);
+            while (Instant.now().isBefore(deadline)) {
+                var records = consumer.poll(Duration.ofMillis(300));
+                for (var record : records) {
+                    if (orderId.toString().equals(record.key())) {
+                        return record.value();
+                    }
+                }
+            }
+        }
+        throw new AssertionError("No message for order " + orderId + " landed on " + dltTopic + " within " + timeout);
     }
 
     private void awaitTrue(BooleanSupplier condition, Duration timeout) {
@@ -253,5 +288,36 @@ class OrderControllerIntegrationTest {
         ResponseEntity<OrderResponse> second = restTemplate.postForEntity(baseUrl(), new HttpEntity<>(request, headers), OrderResponse.class);
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(second.getBody().id()).isEqualTo(first.getBody().id());
+    }
+
+    /**
+     * No test anywhere in the codebase had ever proven the other half of the retry/DLT contract
+     * (docs/architecture.md section 11): a message that fails on EVERY delivery attempt must have
+     * its retries exhaust and actually land on the dead-letter topic, not spin forever or silently
+     * vanish. The spy has no doCallRealMethod() fallback - it throws on every attempt.
+     */
+    @Test
+    void paymentCompleted_landsOnDeadLetterTopic_whenEveryAttemptFails() {
+        UUID userId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        stubProduct(productId, "Widget", "9.99");
+        OrderResponse created = createOrder(userId, productId, 1);
+        publish("inventory.reserved", created.id(), "InventoryReserved",
+                new InventoryReservedPayload(created.id(), UUID.randomUUID(), userId, created.totalAmount(), List.of()),
+                UUID.randomUUID());
+        awaitTrue(() -> getOrder(userId, created.id()).status() == OrderStatus.AWAITING_PAYMENT, Duration.ofSeconds(10));
+
+        Mockito.doThrow(new RuntimeException("permanently broken"))
+                .when(outboxWriter).write(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+
+        publish("payment.completed", created.id(), "PaymentCompleted",
+                new PaymentCompletedPayload(created.id(), UUID.randomUUID(), created.totalAmount(), "txn-1"), UUID.randomUUID());
+
+        // 4 attempts with 500ms/x2 backoff exhaust in ~7.5s; generous margin for the DLT publish.
+        String dltMessage = awaitDltMessage("payment.completed.DLT", created.id(), Duration.ofSeconds(20));
+        assertThat(dltMessage).contains(created.id().toString());
+
+        // Every attempt failed and rolled back - the order never advanced past AWAITING_PAYMENT.
+        assertThat(getOrder(userId, created.id()).status()).isEqualTo(OrderStatus.AWAITING_PAYMENT);
     }
 }
